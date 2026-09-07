@@ -1,0 +1,185 @@
+# Canonical public release-source policy for GWexpy Studio 0.1.0a1.
+#
+# This is an allowlist, not a repository cleanup mechanism.  Every source-tree
+# path must be either intentionally included below or explicitly excluded/denied.
+# A new unclassified path makes export fail so that publication scope is reviewed.
+# ``deny`` is a hard private boundary; it cannot be overridden by a later include.
+
+# Product source, deterministic inputs, and public user documentation.
+include README.md
+include README.ja.md
+include ROADMAP.md
+include .gitignore
+include LICENSE
+include LICENSE.*
+include SECURITY.md
+include SECURITY.*
+include pyproject.toml
+include pytest-gui.ini
+include constraints/**
+exclude constraints/alpha-linux-py312.txt
+include examples/**
+include src/**
+exclude packaging/**
+include packaging/release-source-allowlist.txt
+include packaging/trial-io-capabilities.json
+include docs/adr/**
+include docs/architecture-overview.md
+include docs/design/**
+include docs/development.md
+include docs/Quick-Start.md
+include docs/Quick-Start.ja.md
+include docs/release/**
+exclude docs/release/artifact-inventory.md
+exclude docs/release/build-provenance.md
+exclude docs/release/io-capability-contract.md
+exclude docs/release/packaged-application-gate.md
+exclude docs/release/standalone-build.md
+exclude docs/adr/0014-linux-internal-alpha-exception.md
+exclude docs/adr/0015-linux-source-alpha-publication.md
+exclude docs/adr/0016-linux-trial-artifact-provenance.md
+exclude docs/adr/0011-packaging-bundled-runtime.md
+exclude docs/adr/0013-pytest-execution-environment.md
+
+# Public release-source tooling.  Other historical scripts stay private until
+# they are deliberately rewritten for a public source snapshot.
+include scripts/release_source_manifest.py
+include scripts/export_release_source.py
+include scripts/verify_public_source.py
+include scripts/build_trial_wheel.py
+include scripts/capture_trial_resolution.py
+include scripts/run_trial_technical_gate.py
+include scripts/assemble_trial_bundle.py
+include scripts/verify_trial_bundle.py
+include scripts/extract_trial_artifact.py
+exclude scripts/capture_alpha_trial.py
+exclude scripts/build_appimage.py
+exclude scripts/build_standalone.py
+exclude scripts/artifact_inventory.py
+exclude scripts/artifact_inventory_input.py
+exclude scripts/artifact_tree_manifest.py
+exclude scripts/check_baseline.py
+exclude scripts/check_test_inventory.py
+exclude scripts/generate_owner_map.py
+exclude scripts/gui_process.py
+exclude scripts/gui_process_startup.py
+exclude scripts/gui_run_lifecycle.py
+exclude scripts/gui_test_evidence.py
+exclude scripts/preflight_import.py
+exclude scripts/promotion_history.py
+exclude scripts/promotion_readiness.py
+exclude scripts/public_test_collection.py
+exclude scripts/run_alpha_acceptance.py
+exclude scripts/run_gui_tests.py
+exclude scripts/release_provenance.py
+exclude scripts/spike_assets/**
+exclude scripts/spike_linux_packaging.py
+exclude scripts/spike_linux_toolkit.py
+exclude scripts/test_environment.py
+exclude scripts/timing_spike.py
+exclude scripts/verify_alpha_trial_export.py
+exclude scripts/verify_audit_closure.py
+exclude scripts/verify_contracts.py
+exclude scripts/verify_gui_dependencies.py
+include scripts/verify_signal_io.py
+
+# Source-level scientific regression tests.  Private evidence/contract auditing
+# is intentionally not asserted to be public release-source test infrastructure.
+include tests/conftest.py
+include tests/architecture/**
+include tests/e2e/**
+include tests/integration/**
+include tests/release/**
+exclude tests/release/test_appimage_layout.py
+exclude tests/release/test_artifact_inventory.py
+exclude tests/release/test_artifact_tree_manifest.py
+exclude tests/release/test_release_provenance.py
+exclude tests/release/test_standalone_build.py
+include tests/spikes/**
+include tests/support/**
+include tests/test_*.py
+include tests/unit/**
+deny tests/contracts/**
+deny tests/meta/**
+
+# GUI tests that do not depend on private audit-runner infrastructure.
+include gui_tests/__init__.py
+include gui_tests/conftest.py
+include gui_tests/test_dialog_validation.py
+include gui_tests/test_launcher_project_recovery.py
+include gui_tests/test_plot_canvas.py
+include gui_tests/test_signal_native_workflow.py
+include gui_tests/test_signal_panels.py
+include gui_tests/test_signal_plotting.py
+include gui_tests/test_signal_window.py
+include gui_tests/test_tree_metadata_history.py
+include gui_tests/test_trial_launcher_capabilities.py
+include gui_tests/test_ui_lifecycle.py
+include gui_tests/test_welcome_support.py
+include gui_tests/test_workspace_bridge.py
+include gui_tests/test_workspace_domain_review.py
+include gui_tests/test_workspace_native.py
+include gui_tests/test_workspace_view.py
+include gui_tests/test_workspace_window.py
+exclude gui_tests/font_cache_audit_cases.py
+exclude gui_tests/runner_audit_cases.py
+exclude gui_tests/runner_audit_interrupt_cases.py
+exclude gui_tests/socket_audit_cases.py
+exclude gui_tests/test_alpha_workflow.py
+exclude gui_tests/test_file_drop.py
+exclude gui_tests/test_gui_lane_contract.py
+exclude gui_tests/test_gui_runner_audit.py
+exclude gui_tests/test_signal_bridge.py
+exclude gui_tests/test_trial_workflow.py
+exclude gui_tests/test_ui_worker_boundary.py
+exclude gui_tests/test_window_usability.py
+deny gui_tests/contracts/**
+
+# Explicit private-source boundaries.
+deny .agent/**
+deny .claude/**
+deny .clinerules/**
+deny .codex/**
+deny .continue/**
+deny .cursor/**
+deny .gemini/**
+deny .github-copilot/**
+deny .harness/**
+deny .opencode/**
+deny AGENTS.md
+deny CLAUDE.md
+deny STATUS.md
+deny contract-baseline.toml
+deny gui-contract-baseline.toml
+deny docs/evidence/**
+deny docs/notes/**
+deny docs/plans/**
+deny docs/progress/**
+deny docs/superpowers/**
+deny harness/**
+deny memory-bank/**
+deny notes/**
+
+# Local checkout/build products are not release source.  ``.github`` is an
+# explicit exclusion rather than a denial so a later public workflow can be
+# deliberately included by a reviewed policy edit.
+exclude .git
+exclude .git/**
+exclude .github/**
+# The source-identity workflow is public build tooling.  This later include
+# deliberately overrides the broad .github exclusion; private workflow files
+# remain excluded unless individually reviewed into this snapshot.
+include .github/workflows/ci.yml
+include .github/workflows/source-identity.yml
+include .github/workflows/build-trial-wheel.yml
+include .github/workflows/publish-trial.yml
+exclude .mypy_cache/**
+exclude .pytest_cache/**
+exclude .ruff_cache/**
+exclude .venv/**
+exclude __pycache__/**
+exclude **/__pycache__/**
+exclude **/*.pyc
+exclude src/*.egg-info/**
+exclude build/**
+exclude dist/**

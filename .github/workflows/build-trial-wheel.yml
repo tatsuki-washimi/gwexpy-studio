@@ -1,0 +1,556 @@
+name: Build trial wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character public default-branch commit SHA (P).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+concurrency:
+  group: trial-build-${{ github.repository }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Build one immutable trial seed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Bind the dispatch to default-branch P
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          source_sha = os.environ["SOURCE_SHA"]
+          if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+              sys.exit("source_sha must be a lowercase 40-character Git SHA")
+          if os.environ["GITHUB_REF"] != "refs/heads/" + os.environ["DEFAULT_BRANCH"]:
+              sys.exit("dispatch Build trial wheel from the default branch")
+          if source_sha != os.environ["GITHUB_SHA"]:
+              sys.exit("source_sha must equal the dispatched default-branch HEAD")
+          PY
+
+      # actions/checkout v4.2.2 resolved from the official tag.
+      - name: Check out exactly P
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Recheck P after checkout
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Create the wheel builder environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.12 -m venv "$RUNNER_TEMP/trial-builder-venv"
+          "$RUNNER_TEMP/trial-builder-venv/bin/python" -m pip install --upgrade pip setuptools
+
+      - name: Build and bind the seed evidence
+        id: seed
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          utc_date="$(date -u +%Y%m%d)"
+          output="$RUNNER_TEMP/trial-wheel"
+          seed="$RUNNER_TEMP/trial-seed"
+          "$RUNNER_TEMP/trial-builder-venv/bin/python" scripts/build_trial_wheel.py \
+            --source "$GITHUB_WORKSPACE" \
+            --output "$output" \
+            --source-sha "$SOURCE_SHA" \
+            --utc-date "$utc_date" \
+            --run "$RUN_NUMBER" \
+            --attempt "$RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/build-result.json"
+          python3.12 - "$output" "$seed" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import sys
+
+          output = Path(sys.argv[1])
+          seed = Path(sys.argv[2])
+          source_sha = sys.argv[3]
+          github_output = Path(sys.argv[4])
+          trial_path = output / "TRIAL-MANIFEST.json"
+          source_path = output / "SOURCE-MANIFEST.json"
+          staging_path = output / "STAGING-MANIFEST.json"
+          trial = json.loads(trial_path.read_text(encoding="utf-8"))
+          required = {
+              "build_id", "generated_files", "schema", "source_manifest_sha256",
+              "source_sha", "staging_manifest_sha256", "version", "wheel_filename",
+              "wheel_sha256",
+          }
+          if set(trial) != required or trial.get("schema") != 1:
+              raise SystemExit("trial build produced an invalid preliminary manifest")
+          if trial["source_sha"] != source_sha:
+              raise SystemExit("trial seed source SHA does not match P")
+          if re.fullmatch(r"[0-9a-f]{64}", trial["wheel_sha256"]) is None:
+              raise SystemExit("trial seed wheel digest is invalid")
+          wheel = output / trial["wheel_filename"]
+          if not wheel.is_file() or hashlib.sha256(wheel.read_bytes()).hexdigest() != trial["wheel_sha256"]:
+              raise SystemExit("trial seed wheel does not match preliminary manifest")
+          if hashlib.sha256(source_path.read_bytes()).hexdigest() != trial["source_manifest_sha256"]:
+              raise SystemExit("trial seed source manifest does not match preliminary manifest")
+          if hashlib.sha256(staging_path.read_bytes()).hexdigest() != trial["staging_manifest_sha256"]:
+              raise SystemExit("trial seed staging manifest does not match preliminary manifest")
+          seed.mkdir(mode=0o700)
+          for path in (wheel, source_path, staging_path, trial_path):
+              shutil.copyfile(path, seed / path.name)
+          record = {
+              "build_id": trial["build_id"],
+              "schema": 1,
+              "source_manifest_sha256": trial["source_manifest_sha256"],
+              "source_sha": trial["source_sha"],
+              "staging_manifest_sha256": trial["staging_manifest_sha256"],
+              "version": trial["version"],
+              "wheel_filename": trial["wheel_filename"],
+              "wheel_sha256": trial["wheel_sha256"],
+          }
+          (seed / "BUILD-SEED.json").write_text(
+              json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          with github_output.open("a", encoding="utf-8") as stream:
+              stream.write(f"wheel_filename={record['wheel_filename']}\n")
+              stream.write(f"build_id={record['build_id']}\n")
+          PY
+
+      # actions/upload-artifact v4.6.2 resolved from the official tag.
+      - name: Upload the immutable seed
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trial-seed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-seed/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+
+  qualify-x86_64:
+    name: Qualify x86_64 runtime closure
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Bind qualification to default-branch P
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+
+      - name: Check out P for the sealed gate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Recheck x86_64 gate checkout identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+
+      # actions/download-artifact v4.3.0 resolved from the official tag.
+      - name: Download the only trial seed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-seed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-seed
+
+      - name: Verify seed identity before x86_64 installation
+        id: seed
+        shell: bash
+        env:
+          SEED: ${{ runner.temp }}/trial-seed
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3.12 - "$SEED" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          from scripts.capture_trial_resolution import load_trial_artifact
+
+          seed = Path(sys.argv[1])
+          source_sha = sys.argv[2]
+          github_output = Path(sys.argv[3])
+          names = {path.name for path in seed.iterdir()}
+          record = json.loads((seed / "BUILD-SEED.json").read_text(encoding="utf-8"))
+          wheel = record.get("wheel_filename")
+          expected = {
+              "BUILD-SEED.json", "SOURCE-MANIFEST.json", "STAGING-MANIFEST.json",
+              "TRIAL-MANIFEST.json", wheel,
+          }
+          if not isinstance(wheel, str) or names != expected:
+              raise SystemExit("trial seed asset set is invalid")
+          if set(record) != {
+              "build_id", "schema", "source_manifest_sha256", "source_sha",
+              "staging_manifest_sha256", "version", "wheel_filename", "wheel_sha256",
+          } or record.get("schema") != 1:
+              raise SystemExit("trial seed record is invalid")
+          artifact = load_trial_artifact(
+              wheel=seed / wheel,
+              trial_manifest=seed / "TRIAL-MANIFEST.json",
+              source_manifest=seed / "SOURCE-MANIFEST.json",
+              staging_manifest=seed / "STAGING-MANIFEST.json",
+          )
+          if artifact.source_sha != source_sha:
+              raise SystemExit("trial seed source identity is invalid")
+          expected_record = {
+              "build_id": artifact.build_id,
+              "schema": 1,
+              "source_manifest_sha256": artifact.source_manifest_sha256,
+              "source_sha": artifact.source_sha,
+              "staging_manifest_sha256": artifact.staging_manifest_sha256,
+              "version": artifact.version,
+              "wheel_filename": artifact.wheel_filename,
+              "wheel_sha256": artifact.wheel_sha256,
+          }
+          if record != expected_record:
+              raise SystemExit("trial seed record disagrees with its verified artifact")
+          if re.fullmatch(r"[0-9a-f]{40}", artifact.source_sha) is None:
+              raise SystemExit("trial seed source SHA is invalid")
+          with github_output.open("a", encoding="utf-8") as stream:
+              stream.write(f"wheel_filename={artifact.wheel_filename}\n")
+          PY
+
+      - name: Install Qt EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+
+      - name: Create the x86_64 resolver environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.12 -m venv "$RUNNER_TEMP/trial-resolver-venv"
+          "$RUNNER_TEMP/trial-resolver-venv/bin/python" -m pip install --upgrade pip
+
+      - name: Resolve, reinstall, and qualify x86_64
+        shell: bash
+        env:
+          SEED: ${{ runner.temp }}/trial-seed
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/trial-resolver-venv/bin/python" scripts/capture_trial_resolution.py \
+            --wheel "$SEED/${{ steps.seed.outputs.wheel_filename }}" \
+            --trial-manifest "$SEED/TRIAL-MANIFEST.json" \
+            --source-manifest "$SEED/SOURCE-MANIFEST.json" \
+            --staging-manifest "$SEED/STAGING-MANIFEST.json" \
+            --checkout "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/qualification"
+
+      - name: Upload x86_64 qualification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trial-qualification-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+
+  qualify-aarch64:
+    name: Qualify aarch64 runtime closure
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Bind qualification to default-branch P
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+
+      - name: Check out P for the sealed gate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Recheck aarch64 gate checkout identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+
+      - name: Download the only trial seed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-seed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-seed
+
+      - name: Verify seed identity before aarch64 installation
+        id: seed
+        shell: bash
+        env:
+          SEED: ${{ runner.temp }}/trial-seed
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3.12 - "$SEED" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          from scripts.capture_trial_resolution import load_trial_artifact
+
+          seed = Path(sys.argv[1])
+          source_sha = sys.argv[2]
+          github_output = Path(sys.argv[3])
+          names = {path.name for path in seed.iterdir()}
+          record = json.loads((seed / "BUILD-SEED.json").read_text(encoding="utf-8"))
+          wheel = record.get("wheel_filename")
+          expected = {
+              "BUILD-SEED.json", "SOURCE-MANIFEST.json", "STAGING-MANIFEST.json",
+              "TRIAL-MANIFEST.json", wheel,
+          }
+          if not isinstance(wheel, str) or names != expected:
+              raise SystemExit("trial seed asset set is invalid")
+          if set(record) != {
+              "build_id", "schema", "source_manifest_sha256", "source_sha",
+              "staging_manifest_sha256", "version", "wheel_filename", "wheel_sha256",
+          } or record.get("schema") != 1:
+              raise SystemExit("trial seed record is invalid")
+          artifact = load_trial_artifact(
+              wheel=seed / wheel,
+              trial_manifest=seed / "TRIAL-MANIFEST.json",
+              source_manifest=seed / "SOURCE-MANIFEST.json",
+              staging_manifest=seed / "STAGING-MANIFEST.json",
+          )
+          if artifact.source_sha != source_sha:
+              raise SystemExit("trial seed source identity is invalid")
+          expected_record = {
+              "build_id": artifact.build_id,
+              "schema": 1,
+              "source_manifest_sha256": artifact.source_manifest_sha256,
+              "source_sha": artifact.source_sha,
+              "staging_manifest_sha256": artifact.staging_manifest_sha256,
+              "version": artifact.version,
+              "wheel_filename": artifact.wheel_filename,
+              "wheel_sha256": artifact.wheel_sha256,
+          }
+          if record != expected_record:
+              raise SystemExit("trial seed record disagrees with its verified artifact")
+          if re.fullmatch(r"[0-9a-f]{40}", artifact.source_sha) is None:
+              raise SystemExit("trial seed source SHA is invalid")
+          with github_output.open("a", encoding="utf-8") as stream:
+              stream.write(f"wheel_filename={artifact.wheel_filename}\n")
+          PY
+
+      - name: Install Qt EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+
+      - name: Create the aarch64 resolver environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.12 -m venv "$RUNNER_TEMP/trial-resolver-venv"
+          "$RUNNER_TEMP/trial-resolver-venv/bin/python" -m pip install --upgrade pip
+
+      - name: Resolve, reinstall, and qualify aarch64
+        shell: bash
+        env:
+          SEED: ${{ runner.temp }}/trial-seed
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/trial-resolver-venv/bin/python" scripts/capture_trial_resolution.py \
+            --wheel "$SEED/${{ steps.seed.outputs.wheel_filename }}" \
+            --trial-manifest "$SEED/TRIAL-MANIFEST.json" \
+            --source-manifest "$SEED/SOURCE-MANIFEST.json" \
+            --staging-manifest "$SEED/STAGING-MANIFEST.json" \
+            --checkout "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/qualification"
+
+      - name: Upload aarch64 qualification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trial-qualification-aarch64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+
+  assemble:
+    name: Assemble the final trial bundle
+    needs: [qualify-x86_64, qualify-aarch64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out P for source-bound Quick Start files
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Recheck assembly checkout identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+
+      - name: Download the immutable seed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-seed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-seed
+
+      - name: Download x86_64 qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-qualification-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification-x86_64
+
+      - name: Download aarch64 qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-qualification-aarch64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification-aarch64
+
+      - name: Verify the immutable seed before assembly
+        id: seed
+        shell: bash
+        env:
+          SEED: ${{ runner.temp }}/trial-seed
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3.12 - "$SEED" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          from scripts.capture_trial_resolution import load_trial_artifact
+
+          seed = Path(sys.argv[1])
+          source_sha = sys.argv[2]
+          github_output = Path(sys.argv[3])
+          names = {path.name for path in seed.iterdir()}
+          record = json.loads((seed / "BUILD-SEED.json").read_text(encoding="utf-8"))
+          wheel = record.get("wheel_filename")
+          expected = {
+              "BUILD-SEED.json", "SOURCE-MANIFEST.json", "STAGING-MANIFEST.json",
+              "TRIAL-MANIFEST.json", wheel,
+          }
+          if not isinstance(wheel, str) or names != expected:
+              raise SystemExit("trial seed asset set is invalid")
+          if set(record) != {
+              "build_id", "schema", "source_manifest_sha256", "source_sha",
+              "staging_manifest_sha256", "version", "wheel_filename", "wheel_sha256",
+          } or record.get("schema") != 1:
+              raise SystemExit("trial seed record is invalid")
+          artifact = load_trial_artifact(
+              wheel=seed / wheel,
+              trial_manifest=seed / "TRIAL-MANIFEST.json",
+              source_manifest=seed / "SOURCE-MANIFEST.json",
+              staging_manifest=seed / "STAGING-MANIFEST.json",
+          )
+          if artifact.source_sha != source_sha:
+              raise SystemExit("trial seed source identity is invalid")
+          expected_record = {
+              "build_id": artifact.build_id,
+              "schema": 1,
+              "source_manifest_sha256": artifact.source_manifest_sha256,
+              "source_sha": artifact.source_sha,
+              "staging_manifest_sha256": artifact.staging_manifest_sha256,
+              "version": artifact.version,
+              "wheel_filename": artifact.wheel_filename,
+              "wheel_sha256": artifact.wheel_sha256,
+          }
+          if record != expected_record:
+              raise SystemExit("trial seed record disagrees with its verified artifact")
+          if re.fullmatch(r"[0-9a-f]{40}", artifact.source_sha) is None:
+              raise SystemExit("trial seed source SHA is invalid")
+          with github_output.open("a", encoding="utf-8") as stream:
+              stream.write(f"wheel_filename={artifact.wheel_filename}\n")
+          PY
+
+      - name: Assemble and verify the fixed asset set
+        shell: bash
+        env:
+          SEED: ${{ runner.temp }}/trial-seed
+          X86: ${{ runner.temp }}/qualification-x86_64
+          ARM: ${{ runner.temp }}/qualification-aarch64
+        run: |
+          set -euo pipefail
+          python3.12 scripts/assemble_trial_bundle.py \
+            --output "$RUNNER_TEMP/trial-bundle" \
+            --wheel "$SEED/${{ steps.seed.outputs.wheel_filename }}" \
+            --trial-manifest "$SEED/TRIAL-MANIFEST.json" \
+            --source-manifest "$SEED/SOURCE-MANIFEST.json" \
+            --staging-manifest "$SEED/STAGING-MANIFEST.json" \
+            --constraints-x86-64 "$X86/constraints-ubuntu24-x86_64.txt" \
+            --resolution-x86-64 "$X86/resolution-ubuntu24-x86_64.json" \
+            --constraints-aarch64 "$ARM/constraints-ubuntu24-aarch64.txt" \
+            --resolution-aarch64 "$ARM/resolution-ubuntu24-aarch64.json" \
+            --quick-start docs/Quick-Start.md \
+            --quick-start-ja docs/Quick-Start.ja.md \
+            --repository "$GITHUB_REPOSITORY" \
+            --build-workflow-path .github/workflows/build-trial-wheel.yml \
+            --build-run-id "$GITHUB_RUN_ID" \
+            --build-run-number "$GITHUB_RUN_NUMBER" \
+            --build-run-attempt "$GITHUB_RUN_ATTEMPT"
+          python3.12 scripts/verify_trial_bundle.py --bundle "$RUNNER_TEMP/trial-bundle"
+
+      - name: Upload the complete trial bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trial-bundle-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-bundle/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false

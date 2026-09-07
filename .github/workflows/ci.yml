@@ -1,0 +1,87 @@
+name: Public CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-and-tests:
+    name: Public source and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      MPLBACKEND: Agg
+      PYTHONDONTWRITEBYTECODE: "1"
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      # actions/checkout v4.2.2 resolved from the official tag.
+      - name: Check out public source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the public source policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.12 scripts/verify_public_source.py \
+            --root . \
+            --allowlist packaging/release-source-allowlist.txt \
+            --json
+          python3.12 scripts/release_source_manifest.py build \
+            --public-checkout \
+            --root . \
+            --allowlist packaging/release-source-allowlist.txt \
+            --output "$RUNNER_TEMP/SOURCE-MANIFEST.json" \
+            --json
+
+      - name: Install Qt EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+
+      - name: Create a Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install \
+            -c constraints/signal-linux-py312.txt \
+            -e '.[dev]'
+          .venv/bin/python -m pip check
+
+      - name: Lint and run public source tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m ruff check .
+          .venv/bin/python -m pytest -q
+
+      - name: Build the public wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m pip wheel \
+            --no-deps \
+            --wheel-dir "$RUNNER_TEMP/wheel" \
+            .
+          test -n "$(find "$RUNNER_TEMP/wheel" -maxdepth 1 -name '*.whl' -print -quit)"
+
+      - name: Run public GUI tests offscreen
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m pytest -c pytest-gui.ini -q gui_tests

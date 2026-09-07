@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gwexpy-studio"
+dynamic = ["version"]
+description = "Linux desktop application for GWexpy scientific analysis."
+license = {file = "LICENSE"}
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "PySide6-Essentials==6.11.2",
+    "gwexpy>=0.2.0,<0.3.0",
+    "gwpy>=4.0.0,<5.0.0",
+    "numpy>=2.0.0,<3.0.0",
+    "scipy>=1.15.0,<2.0.0",
+    "astropy>=7.0.0,<9.0.0",
+    "matplotlib>=3.10.0,<4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "setuptools>=68",
+    "pytest",
+    "pytest-cov",
+    "pytest-timeout",
+    "ruff",
+    "mypy",
+    "jsonschema",
+    "packaging",
+]
+
+[project.gui-scripts]
+gwexpy-studio = "gwexpy_studio.ui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gwexpy_studio = ["assets/*.csv", "assets/*.json", "schemas/*.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "gwexpy_studio._version.__version__"}
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = ["tests"]
+markers = [
+    "contract(id): one executable requirement contract item",
+    "unit: isolated unit-level test",
+    "integration: multi-component or external-package test",
+    "e2e: end-to-end test",
+    "architecture: architecture/import-boundary test",
+    "gui: offscreen Qt user-interface test",
+    "explicit_capability_handshake: test owns the worker startup handshake",
+    "long: long-running contract test",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+explicit_package_bases = true
+ignore_missing_imports = true
+files = ["src", "scripts", "tests/conftest.py", "tests/support", "tests/meta"]

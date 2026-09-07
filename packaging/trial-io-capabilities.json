@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "datatype": "TimeSeries",
+      "format": "csv",
+      "direction": "read",
+      "tier": "A"
+    }
+  ]
+}
