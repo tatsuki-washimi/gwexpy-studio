@@ -253,6 +253,13 @@ jobs:
               stream.write(f"wheel_filename={artifact.wheel_filename}\n")
           PY
 
+      - name: Install Qt EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+
       - name: Create the x86_64 resolver environment
         shell: bash
         run: |
@@ -376,6 +383,13 @@ jobs:
           with github_output.open("a", encoding="utf-8") as stream:
               stream.write(f"wheel_filename={artifact.wheel_filename}\n")
           PY
+
+      - name: Install Qt EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
 
       - name: Create the aarch64 resolver environment
         shell: bash

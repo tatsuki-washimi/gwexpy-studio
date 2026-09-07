@@ -1691,22 +1691,24 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A real binary-only install produces only bounded closure evidence."""
+    """A real binary-only install records gate identity for the active 3.12 patch."""
     wheel, trial_manifest, source_manifest, identity, checkout = (
         _bind_trial_artifact_to_checkout(trial_artifact, tmp_path)
     )
+    expected_machine = _resolution()._machine()
+    expected_python_version = sys.version.split()[0]
     monkeypatch.setattr(
         _resolution(),
         "run_installed_technical_gate",
         lambda **_kwargs: {
-            "architecture": "x86_64",
+            "architecture": expected_machine,
             "checks": {name: True for name in _gate()._CHECK_NAMES},
             "installed": {
                 "build_id": identity["build_id"],
                 "source_sha": identity["source_sha"],
                 "version": identity["version"],
             },
-            "python_version": "3.12.12",
+            "python_version": expected_python_version,
             "schema": 2,
             "status": "passed",
         },
@@ -1753,14 +1755,14 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
     assert document["phase_one"]["pip_report_sha256"] != ""
     assert document["phase_one"]["pip_inspect_sha256"] != ""
     assert document["technical_gate"] == {
-        "architecture": "x86_64",
+        "architecture": expected_machine,
         "checks": {name: True for name in _gate()._CHECK_NAMES},
         "installed": {
             "build_id": identity["build_id"],
             "source_sha": identity["source_sha"],
             "version": identity["version"],
         },
-        "python_version": "3.12.12",
+        "python_version": expected_python_version,
         "schema": 2,
         "status": "passed",
     }
