@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Personal AI harness (central storage in ai-harness/projects/)
+.harness
+
+# GWexpy Studio local runtime and project artifacts
+.gwxcache/
+*.gwxproj
+.venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/

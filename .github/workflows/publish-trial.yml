@@ -1,0 +1,630 @@
+name: Publish trial prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Exact successful Build trial wheel workflow run ID.
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+concurrency:
+  group: trial-publish
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify one selected build before approval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact_digest: ${{ steps.selected.outputs.artifact_digest }}
+      artifact_id: ${{ steps.selected.outputs.artifact_id }}
+      source_sha: ${{ steps.selected.outputs.source_sha }}
+      tag: ${{ steps.selected.outputs.tag }}
+    steps:
+      - name: Validate the dispatch boundary
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          CONTROL_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          if re.fullmatch(r"[1-9][0-9]*", os.environ["BUILD_RUN_ID"]) is None:
+              sys.exit("build_run_id must be a positive decimal workflow run ID")
+          if re.fullmatch(r"[0-9a-f]{40}", os.environ["CONTROL_SHA"]) is None:
+              sys.exit("dispatch commit is not a lowercase 40-character Git SHA")
+          if os.environ["GITHUB_REF"] != "refs/heads/" + os.environ["DEFAULT_BRANCH"]:
+              sys.exit("dispatch Publish trial prerelease from the default branch")
+          PY
+
+      # actions/checkout v4.2.2 resolved from the official tag.
+      - name: Check out trusted publish controls from P
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Recheck trusted publish controls
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$CONTROL_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Fetch the exact selected build evidence
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/runs/$BUILD_RUN_ID" \
+            > "$RUNNER_TEMP/build-run.json"
+          gh api --paginate --slurp -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/runs/$BUILD_RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/build-artifacts.json"
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/ref/heads/${{ github.event.repository.default_branch }}" \
+            > "$RUNNER_TEMP/default-head.json"
+
+      - name: Verify the selected build and pre-approval default head
+        id: selected
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          CONTROL_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/build-run.json" "$RUNNER_TEMP/build-artifacts.json" "$RUNNER_TEMP/default-head.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+
+          run_path, artifacts_path, head_path, output_path = map(Path, sys.argv[1:])
+          run = json.loads(run_path.read_text(encoding="utf-8"))
+          artifacts = json.loads(artifacts_path.read_text(encoding="utf-8"))
+          default_head = json.loads(head_path.read_text(encoding="utf-8"))
+          build_run_id = int(os.environ["BUILD_RUN_ID"])
+          repository = os.environ["REPOSITORY"]
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          control_sha = os.environ["CONTROL_SHA"]
+
+          def fail(message: str) -> None:
+              raise SystemExit(message)
+
+          def verify_default_head(source_sha: str) -> None:
+              reference = default_head.get("object")
+              if not isinstance(reference, dict) or reference.get("type") != "commit":
+                  fail("default branch reference is invalid")
+              if reference.get("sha") != source_sha:
+                  fail("default branch HEAD changed or does not equal P")
+
+          def verify_selected_build() -> tuple[str, int, int, int, str, str]:
+              if not isinstance(run, dict):
+                  fail("selected workflow run is invalid")
+              if run.get("id") != build_run_id:
+                  fail("selected workflow run ID is invalid")
+              if run.get("path") != ".github/workflows/build-trial-wheel.yml@" + default_branch:
+                  fail("selected run is not Build trial wheel")
+              if run.get("event") != "workflow_dispatch":
+                  fail("selected build did not use the manual build workflow")
+              if run.get("status") != "completed" or run.get("conclusion") != "success":
+                  fail("selected build workflow did not succeed")
+              if run.get("head_branch") != default_branch:
+                  fail("selected build did not run on the default branch")
+              source_sha = run.get("head_sha")
+              if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+                  fail("selected build source SHA is invalid")
+              if source_sha != control_sha:
+                  fail("selected build P does not match trusted publish controls")
+              run_number = run.get("run_number")
+              run_attempt = run.get("run_attempt")
+              if type(run_number) is not int or run_number < 1:
+                  fail("selected build run number is invalid")
+              if type(run_attempt) is not int or run_attempt < 1:
+                  fail("selected build run attempt is invalid")
+              expected_name = f"trial-bundle-{build_run_id}-a{run_attempt}"
+              if not isinstance(artifacts, list) or not artifacts:
+                  fail("selected build artifact pages are invalid")
+              listed = []
+              for page in artifacts:
+                  page_artifacts = page.get("artifacts") if isinstance(page, dict) else None
+                  if not isinstance(page_artifacts, list):
+                      fail("selected build artifact list is invalid")
+                  listed.extend(page_artifacts)
+              matching = [item for item in listed if isinstance(item, dict) and item.get("name") == expected_name]
+              if len(matching) != 1:
+                  fail("selected build has no unique final trial bundle")
+              artifact = matching[0]
+              artifact_id = artifact.get("id")
+              digest = artifact.get("digest")
+              if type(artifact_id) is not int or artifact_id < 1:
+                  fail("selected build artifact ID is invalid")
+              if artifact.get("expired") is not False:
+                  fail("selected build artifact has expired")
+              if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+                  fail("selected build artifact digest is invalid")
+              return source_sha, run_number, run_attempt, artifact_id, digest, expected_name
+
+          source_sha, run_number, run_attempt, artifact_id, digest, _artifact_name = verify_selected_build()
+          verify_default_head(source_sha)
+          tag = f"trial-0.1.0a1-p.{source_sha[:7]}-r{run_number}-a{run_attempt}"
+          if tag == "v0.1.0a1":
+              fail("the final alpha tag is reserved")
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"source_sha={source_sha}\n")
+              output.write(f"artifact_id={artifact_id}\n")
+              output.write(f"artifact_digest={digest}\n")
+              output.write(f"tag={tag}\n")
+          PY
+
+      - name: Verify that the trial tag and release are still absent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ steps.selected.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/matching-refs/tags/$TAG" \
+            > "$RUNNER_TEMP/preflight-tag-refs.json"
+          gh api --paginate --slurp -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/preflight-releases.json"
+          python3 - "$RUNNER_TEMP/preflight-tag-refs.json" "$RUNNER_TEMP/preflight-releases.json" "$TAG" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          refs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          releases = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          tag = sys.argv[3]
+          if refs != []:
+              raise SystemExit("trial tag already exists")
+          if not isinstance(releases, list) or not all(isinstance(page, list) for page in releases):
+              raise SystemExit("release pages are invalid")
+          flattened = [release for page in releases for release in page]
+          if any(isinstance(release, dict) and release.get("tag_name") == tag for release in flattened):
+              raise SystemExit("trial release already exists")
+          PY
+
+      - name: Download, digest-bind, and extract the selected trial bundle
+        shell: bash
+        env:
+          ARTIFACT_DIGEST: ${{ steps.selected.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ steps.selected.outputs.artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method GET -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$RUNNER_TEMP/trial-bundle.zip"
+          python3.12 scripts/extract_trial_artifact.py \
+            --archive "$RUNNER_TEMP/trial-bundle.zip" \
+            --output "$RUNNER_TEMP/trial-bundle" \
+            --expected-digest "$ARTIFACT_DIGEST"
+
+      - name: Verify the downloaded bundle against the selected build
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.selected.outputs.source_sha }}
+          TAG: ${{ steps.selected.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/verify_trial_bundle.py --bundle "$RUNNER_TEMP/trial-bundle"
+          python3 - "$RUNNER_TEMP/trial-bundle/TRIAL-MANIFEST.json" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          trial = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          build = trial.get("build")
+          if not isinstance(build, dict):
+              raise SystemExit("verified bundle build record is missing")
+          workflow = build.get("workflow")
+          if not isinstance(workflow, dict):
+              raise SystemExit("verified bundle workflow record is missing")
+          if build.get("source_sha") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("verified bundle P does not match selected build")
+          if workflow != {
+              "repository": os.environ["REPOSITORY"],
+              "run_attempt": int(os.environ["TAG"].rsplit("-a", 1)[1]),
+              "run_id": int(os.environ["BUILD_RUN_ID"]),
+              "run_number": int(os.environ["TAG"].rsplit("-r", 1)[1].split("-a", 1)[0]),
+              "workflow_path": ".github/workflows/build-trial-wheel.yml",
+          }:
+              raise SystemExit("verified bundle workflow identity does not match selected build")
+          PY
+
+  publish:
+    name: Create the approved immutable prerelease
+    needs: preflight
+    environment: trial-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out the trusted P controls after approval
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Recheck trusted publish controls after approval
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$CONTROL_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Fetch the selected build evidence again after approval
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/runs/$BUILD_RUN_ID" \
+            > "$RUNNER_TEMP/build-run.json"
+          gh api --paginate --slurp -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/runs/$BUILD_RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/build-artifacts.json"
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/ref/heads/${{ github.event.repository.default_branch }}" \
+            > "$RUNNER_TEMP/default-head.json"
+
+      - name: Reverify selected build and default head after approval
+        id: selected
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          CONTROL_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
+          EXPECTED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          EXPECTED_TAG: ${{ needs.preflight.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/build-run.json" "$RUNNER_TEMP/build-artifacts.json" "$RUNNER_TEMP/default-head.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+
+          run_path, artifacts_path, head_path, output_path = map(Path, sys.argv[1:])
+          run = json.loads(run_path.read_text(encoding="utf-8"))
+          artifacts = json.loads(artifacts_path.read_text(encoding="utf-8"))
+          default_head = json.loads(head_path.read_text(encoding="utf-8"))
+          build_run_id = int(os.environ["BUILD_RUN_ID"])
+          repository = os.environ["REPOSITORY"]
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          control_sha = os.environ["CONTROL_SHA"]
+
+          def fail(message: str) -> None:
+              raise SystemExit(message)
+
+          def verify_default_head(source_sha: str) -> None:
+              reference = default_head.get("object")
+              if not isinstance(reference, dict) or reference.get("type") != "commit":
+                  fail("default branch reference is invalid")
+              if reference.get("sha") != source_sha:
+                  fail("default branch HEAD changed or does not equal P")
+
+          def verify_selected_build() -> tuple[str, int, int, int, str]:
+              if not isinstance(run, dict):
+                  fail("selected workflow run is invalid")
+              if run.get("id") != build_run_id:
+                  fail("selected workflow run ID is invalid")
+              if run.get("path") != ".github/workflows/build-trial-wheel.yml@" + default_branch:
+                  fail("selected run is not Build trial wheel")
+              if run.get("event") != "workflow_dispatch":
+                  fail("selected build did not use the manual build workflow")
+              if run.get("status") != "completed" or run.get("conclusion") != "success":
+                  fail("selected build workflow did not succeed")
+              if run.get("head_branch") != default_branch:
+                  fail("selected build did not run on the default branch")
+              source_sha = run.get("head_sha")
+              if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+                  fail("selected build source SHA is invalid")
+              if source_sha != control_sha:
+                  fail("selected build P does not match trusted publish controls")
+              run_number = run.get("run_number")
+              run_attempt = run.get("run_attempt")
+              if type(run_number) is not int or run_number < 1:
+                  fail("selected build run number is invalid")
+              if type(run_attempt) is not int or run_attempt < 1:
+                  fail("selected build run attempt is invalid")
+              expected_name = f"trial-bundle-{build_run_id}-a{run_attempt}"
+              if not isinstance(artifacts, list) or not artifacts:
+                  fail("selected build artifact pages are invalid")
+              listed = []
+              for page in artifacts:
+                  page_artifacts = page.get("artifacts") if isinstance(page, dict) else None
+                  if not isinstance(page_artifacts, list):
+                      fail("selected build artifact list is invalid")
+                  listed.extend(page_artifacts)
+              matching = [item for item in listed if isinstance(item, dict) and item.get("name") == expected_name]
+              if len(matching) != 1:
+                  fail("selected build has no unique final trial bundle")
+              artifact = matching[0]
+              artifact_id = artifact.get("id")
+              digest = artifact.get("digest")
+              if type(artifact_id) is not int or artifact_id < 1:
+                  fail("selected build artifact ID is invalid")
+              if artifact.get("expired") is not False:
+                  fail("selected build artifact has expired")
+              if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+                  fail("selected build artifact digest is invalid")
+              return source_sha, run_number, run_attempt, artifact_id, digest
+
+          source_sha, run_number, run_attempt, artifact_id, digest = verify_selected_build()
+          verify_default_head(source_sha)
+          tag = f"trial-0.1.0a1-p.{source_sha[:7]}-r{run_number}-a{run_attempt}"
+          expected = {
+              "source_sha": source_sha,
+              "artifact_id": str(artifact_id),
+              "artifact_digest": digest,
+              "tag": tag,
+          }
+          actual = {
+              "source_sha": os.environ["EXPECTED_SOURCE_SHA"],
+              "artifact_id": os.environ["EXPECTED_ARTIFACT_ID"],
+              "artifact_digest": os.environ["EXPECTED_ARTIFACT_DIGEST"],
+              "tag": os.environ["EXPECTED_TAG"],
+          }
+          if actual != expected:
+              fail("selected build evidence changed after preflight")
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"source_sha={source_sha}\n")
+              output.write(f"artifact_id={artifact_id}\n")
+              output.write(f"tag={tag}\n")
+          PY
+
+      - name: Recheck that the tag and release are absent after approval
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ steps.selected.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/matching-refs/tags/$TAG" \
+            > "$RUNNER_TEMP/post-approval-tag-refs.json"
+          gh api --paginate --slurp -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/post-approval-releases.json"
+          python3 - "$RUNNER_TEMP/post-approval-tag-refs.json" "$RUNNER_TEMP/post-approval-releases.json" "$TAG" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          refs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          releases = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          tag = sys.argv[3]
+          if refs != []:
+              raise SystemExit("trial tag already exists")
+          if not isinstance(releases, list) or not all(isinstance(page, list) for page in releases):
+              raise SystemExit("release pages are invalid")
+          flattened = [release for page in releases for release in page]
+          if any(isinstance(release, dict) and release.get("tag_name") == tag for release in flattened):
+              raise SystemExit("trial release already exists")
+          PY
+
+      - name: Download, digest-bind, and extract the selected bundle after approval
+        shell: bash
+        env:
+          ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ steps.selected.outputs.artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method GET -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$RUNNER_TEMP/trial-bundle.zip"
+          python3.12 scripts/extract_trial_artifact.py \
+            --archive "$RUNNER_TEMP/trial-bundle.zip" \
+            --output "$RUNNER_TEMP/trial-bundle" \
+            --expected-digest "$ARTIFACT_DIGEST"
+
+      - name: Verify the bundle again after approval
+        id: bundle
+        shell: bash
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.selected.outputs.source_sha }}
+          TAG: ${{ steps.selected.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/verify_trial_bundle.py --bundle "$RUNNER_TEMP/trial-bundle"
+          python3 - "$RUNNER_TEMP/trial-bundle/TRIAL-MANIFEST.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          trial = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          output_path = Path(sys.argv[2])
+          build = trial.get("build")
+          if not isinstance(build, dict):
+              raise SystemExit("verified bundle build record is missing")
+          workflow = build.get("workflow")
+          if not isinstance(workflow, dict):
+              raise SystemExit("verified bundle workflow record is missing")
+          if build.get("source_sha") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("verified bundle P does not match selected build")
+          if workflow != {
+              "repository": os.environ["REPOSITORY"],
+              "run_attempt": int(os.environ["TAG"].rsplit("-a", 1)[1]),
+              "run_id": int(os.environ["BUILD_RUN_ID"]),
+              "run_number": int(os.environ["TAG"].rsplit("-r", 1)[1].split("-a", 1)[0]),
+              "workflow_path": ".github/workflows/build-trial-wheel.yml",
+          }:
+              raise SystemExit("verified bundle workflow identity does not match selected build")
+          wheel = trial.get("wheel")
+          if not isinstance(wheel, dict) or not isinstance(wheel.get("filename"), str):
+              raise SystemExit("verified bundle wheel record is missing")
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"build_id={build['id']}\n")
+              output.write(f"wheel_filename={wheel['filename']}\n")
+          PY
+
+      - name: Create the immutable tag and prerelease
+        shell: bash
+        env:
+          BUILD_ID: ${{ steps.bundle.outputs.build_id }}
+          BUNDLE: ${{ runner.temp }}/trial-bundle
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.selected.outputs.source_sha }}
+          TAG: ${{ steps.selected.outputs.tag }}
+          WHEEL_FILENAME: ${{ steps.bundle.outputs.wheel_filename }}
+        run: |
+          set -euo pipefail
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" \
+            > "$RUNNER_TEMP/final-default-head.json"
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/matching-refs/tags/$TAG" \
+            > "$RUNNER_TEMP/final-tag-refs.json"
+          python3 - "$RUNNER_TEMP/final-default-head.json" "$RUNNER_TEMP/final-tag-refs.json" "$SOURCE_SHA" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          default_head = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          refs = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+          def verify_default_head(source_sha: str) -> None:
+              reference = default_head.get("object")
+              if not isinstance(reference, dict) or reference.get("type") != "commit":
+                  raise SystemExit("default branch reference is invalid")
+              if reference.get("sha") != source_sha:
+                  raise SystemExit("default branch HEAD changed before publication")
+
+          verify_default_head(sys.argv[3])
+          if refs != []:
+              raise SystemExit("trial tag appeared before publication")
+          PY
+          gh api --method POST -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$TAG" \
+            -f "sha=$SOURCE_SHA"
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/ref/tags/$TAG" \
+            > "$RUNNER_TEMP/created-tag.json"
+          python3 - "$RUNNER_TEMP/created-tag.json" "$SOURCE_SHA" "$TAG" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          reference = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if reference.get("ref") != "refs/tags/" + sys.argv[3]:
+              raise SystemExit("created tag reference is invalid")
+          object_ = reference.get("object")
+          if not isinstance(object_, dict) or object_.get("type") != "commit" or object_.get("sha") != sys.argv[2]:
+              raise SystemExit("created trial tag does not point to P")
+          PY
+          python3 - "$BUNDLE" "$WHEEL_FILENAME" "$RUNNER_TEMP/release-assets.txt" <<'PY'
+          from pathlib import Path
+          import sys
+
+          bundle = Path(sys.argv[1])
+          wheel_filename = sys.argv[2]
+          output = Path(sys.argv[3])
+          names = (
+              wheel_filename,
+              "constraints-ubuntu24-x86_64.txt",
+              "constraints-ubuntu24-aarch64.txt",
+              "resolution-ubuntu24-x86_64.json",
+              "resolution-ubuntu24-aarch64.json",
+              "SOURCE-MANIFEST.json",
+              "TRIAL-MANIFEST.json",
+              "SHA256SUMS",
+              "Quick-Start.md",
+              "Quick-Start.ja.md",
+          )
+          paths = [bundle / name for name in names]
+          if not all(path.is_file() for path in paths):
+              raise SystemExit("verified bundle asset set changed before release")
+          output.write_text("\n".join(str(path) for path in paths) + "\n", encoding="utf-8")
+          PY
+          mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
+          gh release create "$TAG" \
+            --repo "$REPOSITORY" \
+            --prerelease \
+            --verify-tag \
+            --title "GWexpy Studio trial $BUILD_ID" \
+            --notes "Trial wheel built from public source $SOURCE_SHA." \
+            "${assets[@]}"
+
+      - name: Verify the release still names the tag at P
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.selected.outputs.source_sha }}
+          TAG: ${{ steps.selected.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/git/ref/tags/$TAG" \
+            > "$RUNNER_TEMP/released-tag.json"
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/releases/tags/$TAG" \
+            > "$RUNNER_TEMP/released-release.json"
+          python3 - "$RUNNER_TEMP/released-tag.json" "$RUNNER_TEMP/released-release.json" "$SOURCE_SHA" "$TAG" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          reference = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          release = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          object_ = reference.get("object")
+          if not isinstance(object_, dict) or object_.get("type") != "commit" or object_.get("sha") != sys.argv[3]:
+              raise SystemExit("release tag no longer points to P")
+          if release.get("tag_name") != sys.argv[4] or release.get("prerelease") is not True:
+              raise SystemExit("created release does not name the trial prerelease tag")
+          PY

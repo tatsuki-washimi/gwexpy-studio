@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gwexpy.org/studio/schemas/project-v1.schema.json",
+  "title": "GWexpy Studio project manifest v1",
+  "description": "Strict data-only project state for the headless Studio prototype.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "created",
+    "modified",
+    "compatibility",
+    "sources",
+    "objects",
+    "operations",
+    "executions",
+    "plots",
+    "ui_state"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "project_id": { "$ref": "#/$defs/projectId" },
+    "created": { "type": "string", "format": "date-time" },
+    "modified": { "type": "string", "format": "date-time" },
+    "compatibility": { "$ref": "#/$defs/compatibility" },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dataSourceRef" },
+      "uniqueItems": true
+    },
+    "objects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dataObjectRef" },
+      "uniqueItems": true
+    },
+    "operations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/operation" },
+      "uniqueItems": true
+    },
+    "executions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/executionRecord" },
+      "uniqueItems": true
+    },
+    "plots": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/plotSpec" },
+      "uniqueItems": true
+    },
+    "ui_state": { "$ref": "#/$defs/jsonObject" }
+  },
+  "$defs": {
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^src-[1-9][0-9]*$"
+    },
+    "objectId": {
+      "type": "string",
+      "pattern": "^obj-[1-9][0-9]*$"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^op-[1-9][0-9]*$"
+    },
+    "executionId": {
+      "type": "string",
+      "pattern": "^exec-[1-9][0-9]*$"
+    },
+    "plotId": {
+      "type": "string",
+      "pattern": "^plot-[1-9][0-9]*$"
+    },
+    "jsonPrimitive": {
+      "type": ["string", "number", "integer", "boolean", "null"]
+    },
+    "jsonValue": {
+      "anyOf": [
+        { "$ref": "#/$defs/jsonPrimitive" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jsonValue" }
+        },
+        { "$ref": "#/$defs/jsonObject" }
+      ]
+    },
+    "jsonObject": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["studio", "gwexpy"],
+      "properties": {
+        "studio": { "type": "string", "minLength": 1 },
+        "gwexpy": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sourceFormat": {
+      "type": "string",
+      "enum": ["hdf5", "csv_enhanced"]
+    },
+    "dataSourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "uri", "format", "size_bytes", "mtime"],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/sourceId" },
+        "uri": {
+          "type": "string",
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/])",
+          "minLength": 1
+        },
+        "format": { "$ref": "#/$defs/sourceFormat" },
+        "size_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "mtime": {
+          "type": ["number", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "quantity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "type": "string", "minLength": 1 }
+      }
+    },
+    "shape1D": {
+      "type": "array",
+      "prefixItems": [{ "type": "integer", "minimum": 0 }],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "shape2D": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "timeAxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t0", "dt"],
+      "properties": {
+        "t0": { "$ref": "#/$defs/quantity" },
+        "dt": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "frequencyAxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["f0", "df"],
+      "properties": {
+        "f0": { "$ref": "#/$defs/quantity" },
+        "df": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "spectrogramAxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t0", "dt", "f0", "df"],
+      "properties": {
+        "t0": { "$ref": "#/$defs/quantity" },
+        "dt": { "$ref": "#/$defs/quantity" },
+        "f0": { "$ref": "#/$defs/quantity" },
+        "df": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "dataObjectCommon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_id",
+        "kind",
+        "shape",
+        "dtype",
+        "unit",
+        "name",
+        "channel",
+        "axes",
+        "produced_by"
+      ],
+      "properties": {
+        "object_id": { "$ref": "#/$defs/objectId" },
+        "kind": { "type": "string" },
+        "shape": { "type": "array" },
+        "dtype": { "type": "string", "minLength": 1 },
+        "unit": { "type": "string", "minLength": 1 },
+        "name": { "type": ["string", "null"] },
+        "channel": { "type": ["string", "null"] },
+        "axes": { "type": "object" },
+        "produced_by": {
+          "anyOf": [
+            { "$ref": "#/$defs/operationId" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "timeSeries": {
+      "allOf": [
+        { "$ref": "#/$defs/dataObjectCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "TimeSeries" },
+            "shape": { "$ref": "#/$defs/shape1D" },
+            "axes": { "$ref": "#/$defs/timeAxes" }
+          },
+          "required": ["kind", "shape", "axes"]
+        }
+      ]
+    },
+    "frequencySeries": {
+      "allOf": [
+        { "$ref": "#/$defs/dataObjectCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "FrequencySeries" },
+            "shape": { "$ref": "#/$defs/shape1D" },
+            "axes": { "$ref": "#/$defs/frequencyAxes" }
+          },
+          "required": ["kind", "shape", "axes"]
+        }
+      ]
+    },
+    "spectrogram": {
+      "allOf": [
+        { "$ref": "#/$defs/dataObjectCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "Spectrogram" },
+            "shape": { "$ref": "#/$defs/shape2D" },
+            "axes": { "$ref": "#/$defs/spectrogramAxes" }
+          },
+          "required": ["kind", "shape", "axes"]
+        }
+      ]
+    },
+    "dataObjectRef": {
+      "oneOf": [
+        { "$ref": "#/$defs/timeSeries" },
+        { "$ref": "#/$defs/frequencySeries" },
+        { "$ref": "#/$defs/spectrogram" }
+      ]
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op_id",
+        "operation_id",
+        "operation_schema",
+        "inputs",
+        "params",
+        "outputs"
+      ],
+      "properties": {
+        "op_id": { "$ref": "#/$defs/operationId" },
+        "operation_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]*$",
+          "minLength": 1
+        },
+        "operation_schema": { "type": "integer", "const": 1 },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/objectId" }
+        },
+        "params": { "$ref": "#/$defs/jsonObject" },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/objectId" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "executionRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "op_id",
+        "started_at",
+        "duration_s",
+        "status",
+        "warnings",
+        "error",
+        "environment"
+      ],
+      "properties": {
+        "execution_id": { "$ref": "#/$defs/executionId" },
+        "op_id": { "$ref": "#/$defs/operationId" },
+        "started_at": { "type": "string", "format": "date-time" },
+        "duration_s": { "type": "number", "minimum": 0 },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "running", "succeeded", "failed"]
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "error": {
+          "anyOf": [
+            { "$ref": "#/$defs/jsonObject" },
+            { "type": "null" }
+          ]
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "plotSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plot_id",
+        "kind",
+        "object_ids",
+        "xscale",
+        "yscale",
+        "xlim",
+        "ylim",
+        "title",
+        "xlabel",
+        "ylabel",
+        "legend",
+        "styles"
+      ],
+      "properties": {
+        "plot_id": { "$ref": "#/$defs/plotId" },
+        "kind": { "type": "string", "enum": ["line", "spectrogram"] },
+        "object_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/objectId" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "xscale": { "type": "string", "enum": ["linear", "log"] },
+        "yscale": { "type": "string", "enum": ["linear", "log"] },
+        "xlim": { "$ref": "#/$defs/limit" },
+        "ylim": { "$ref": "#/$defs/limit" },
+        "title": { "type": ["string", "null"] },
+        "xlabel": { "type": ["string", "null"] },
+        "ylabel": { "type": ["string", "null"] },
+        "legend": { "type": "boolean" },
+        "styles": { "$ref": "#/$defs/jsonObject" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "spectrogram" } }
+          },
+          "then": {
+            "properties": { "object_ids": { "maxItems": 1 } }
+          }
+        }
+      ]
+    },
+    "limit": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "array",
+          "prefixItems": [{ "type": "number" }, { "type": "number" }],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    }
+  }
+}

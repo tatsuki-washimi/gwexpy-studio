@@ -1,0 +1,103 @@
+name: Verify public source identity
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character public commit SHA (P).
+        required: true
+        type: string
+      source_manifest_sha256:
+        description: Exact SHA-256 of the detached canonical source manifest (M).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-identity-${{ github.repository }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify M(P) equals supplied M
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Validate source identity inputs
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_MANIFEST_SHA256: ${{ inputs.source_manifest_sha256 }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          valid = (
+              re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"])
+              and re.fullmatch(
+                  r"[0-9a-f]{64}", os.environ["SOURCE_MANIFEST_SHA256"]
+              )
+          )
+          if not valid:
+              sys.exit("source identity inputs are invalid")
+          if os.environ["GITHUB_REF"] != (
+              "refs/heads/" + os.environ["DEFAULT_BRANCH"]
+          ):
+              sys.exit("dispatch source identity verification from the default branch")
+          if os.environ["SOURCE_SHA"] != os.environ["GITHUB_SHA"]:
+              sys.exit("source_sha must equal the dispatched default-branch HEAD")
+          PY
+
+      # actions/checkout v4.2.2 resolved from the official tag.
+      - name: Check out public commit P
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Verify checkout identity and direct canonical manifest
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPECTED_MANIFEST_SHA256: ${{ inputs.source_manifest_sha256 }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          if [ "$actual_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "checked-out source does not match P" >&2
+            exit 2
+          fi
+          python3.12 scripts/verify_public_source.py \
+            --root . \
+            --allowlist packaging/release-source-allowlist.txt \
+            --json
+          python3.12 scripts/release_source_manifest.py build \
+            --public-checkout \
+            --root . \
+            --allowlist packaging/release-source-allowlist.txt \
+            --output "$RUNNER_TEMP/SOURCE-MANIFEST.json" \
+            --json
+          actual_manifest="$(sha256sum "$RUNNER_TEMP/SOURCE-MANIFEST.json" | awk '{print $1}')"
+          if [ "$actual_manifest" != "$EXPECTED_MANIFEST_SHA256" ]; then
+            echo "M(P) does not equal the supplied canonical manifest" >&2
+            exit 2
+          fi
+
+      # actions/upload-artifact v4.6.2 resolved from the official tag.
+      - name: Retain verified public manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-manifest-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/SOURCE-MANIFEST.json
+          if-no-files-found: error
+          retention-days: 7

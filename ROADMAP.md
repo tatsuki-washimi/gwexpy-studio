@@ -1,360 +1,100 @@
-# GWexpy Studio Roadmap
+# GWexpy Studio ロードマップ
 
-## Product goals
+GWexpy Studioは、Python、Jupyter、GWpy、GWexpyに不慣れな利用者がGUIから解析に触れ、徐々にPython APIへ進めることを目指します。
 
-GWexpy Studio is intended for two primary use cases:
+もう一つの目的は、測定直後などにprogramを書かずにデータをすばやく確認し、基本解析を行えることです。
 
-1. **Help people who are not yet comfortable with Python, Jupyter, GWpy, or GWexpy learn the analysis workflow through a GUI.**
-2. **Provide a fast way to inspect and analyze newly acquired data without writing a program for every quick-look task.**
+最初の利用者は、condaやpipは使えるがGitやsoftware developmentには慣れていない物理系の研究者と学生です。
 
-The primary users are expected to be physics researchers and students working with experimental hardware and data analysis. Many of them may be comfortable with `conda` or `pip`, but not with Git or software-development workflows. Therefore, **`git clone` is not a normal end-user installation path**.
+そのため、最初の配布はGit不要のcondaとpipによるtrial wheelとします。
 
-The near-term distribution strategy is:
+AppImage、DMG、native Windows installerは、その導線を実利用者で検証した後に進めます。
 
-> Make the application installable without Git using a wheel and `conda`/`pip`, validate it with a small number of real users, then move to PyPI and finally to native desktop artifacts such as AppImage or DMG.
+## 現在地
 
----
+private developmentでは、GUI基本操作、GWexpy native I/O、arithmetic、filter、PSD、CSD、coherence、transfer function、Bode表示、project save/reopen、scientific Undo/Redo、view Undo/Redo、crash recovery、provenance、Python exportを実装しています。
 
-## Current stage
+最初の一般利用者向け配布とhuman trialはまだ実施していません。
 
-The private development line already contains the main scientific-workbench functionality, including:
+## M1からM4
 
-- GUI data browsing and plotting
-- GWexpy-native I/O and container handling
-- arithmetic operations and filtering
-- PSD, CSD, coherence, transfer-function analysis, and Bode display
-- project save/reopen
-- scientific Undo/Redo and independent View Undo/Redo
-- crash/recovery handling
-- provenance and reconstruction checks
-- Python export independent of Studio at runtime
-- initial distribution/readiness infrastructure
-
-Before publishing `0.1.0a1` to PyPI, the next priority is **real human trial**, not additional signal-processing features.
-
----
-
-# Phase 1 — Public source migration
-
-## Goal
-
-Move the normal product-development and trial-preparation path from the private development repository to the public `gwexpy-studio` repository.
-
-## Scope
-
-- Integrate the public-ready portions of PR4, PR5, PR6, and the distribution/readiness work.
-- Generate a curated public source snapshot.
-- Exclude private audit evidence, internal notes, private workflow data, secrets, and machine-specific material.
-- Include the public product source, tests, fixtures, schemas, packaging/build scripts, documentation, and CI required to reproduce the public build and checks.
-- Verify that the public commit matches the canonical release-source manifest.
-- Update the public README and user-facing installation/trial documentation.
-
-After migration:
-
-| Repository | Role |
+| Milestone | 完了条件 |
 | --- | --- |
-| `gwexpy-studio` | Product source, normal PRs, Issues, CI, trial builds, releases |
-| `gwexpy-studio-dev` | Private investigations, internal audit material, pre-disclosure security work, or other non-public development material |
+| M1 Public Source | public commit `P`のcanonical manifestが承認済みsnapshot `S/M`と一致し、public sourceだけでbuild/testできる。 |
+| M2 Trial Wheel | 同じStudio wheelをLinux x86_64とaarch64の固定runtime closureでinstallし、core workflowをtechnical qualificationできる。 |
+| M3 Ubuntu Trial | Ubuntu 24.04 x86_64で、開発者以外の3人がGitなしの導入と5分workflowを試す。 |
+| M4 WSL2 Trial | Windows 11上のx86_64 WSL2とARM64 WSL2を実機qualificationし、両architectureを含む3人が試す。 |
 
-Public source migration does **not** by itself mean that a binary release or PyPI release is ready.
+### M1 Public Source
 
----
+private release candidateからpublicに出せるcanonical snapshot `S`を作ります。
 
-# Phase 2 — Installable trial wheel
+source identityはGit commit historyではなく、path、portable mode、content hashのmanifestで定義します。
 
-## Goal
+public commit `P`は、local `.git`だけを除外して`manifest(S) == manifest(P)`を満たす必要があります。
 
-Provide a trial build that can be installed by researchers without Git, before publishing to PyPI.
+public snapshotにはproduct source、public tests、fixtures、schemas、assets、packaging metadata、source identity tooling、docs、CIを含めます。
 
-The initial trial artifact will be a wheel built from a fixed source commit.
+trial wheelのbuild/publish workflowはM2で追加します。
 
-Example installation path:
+private audit evidence、internal note、private workflow data、harness、local build productは含めません。
 
-```bash
-conda create -n gwexpy-studio python=3.12
-conda activate gwexpy-studio
-pip install ./gwexpy_studio-0.1.0a1+trial.<build-id>-py3-none-any.whl
-gwexpy-studio
-```
+### M2 Trial Wheel
 
-## Requirements
+trial wheelはpure Python artifactとして一度だけbuildします。
 
-- `gwexpy-studio` GUI entry point is available after installation.
-- Clean installation works outside the source tree.
-- No Git checkout or editable install is required.
-- Welcome / Try Sample works.
-- Quick Start is available to trial users.
-- About/diagnostics identifies the product version, trial build ID, and source commit.
-- Trial builds are distinguishable from the final `0.1.0a1` publication build.
+x86_64とaarch64では、architecture別にruntime dependency closureを固定して検証します。
 
-This phase intentionally does **not** require AppImage, `.deb`, DMG, Windows installer, or PyPI publication.
+trial assetにはwheel、architecture別constraints、resolution report、source manifest、trial manifest、checksum、Quick Startを含めます。
 
----
+wheelはclean environmentでinstallでき、source tree外から`gwexpy-studio`を起動できなければなりません。
 
-# Phase 3 — Human Trial 1: Ubuntu 24.04
+Welcome、Try Sample、Crop、ASD、project save/reopen、recovery、worker cleanupが両architectureのblocking gateです。
 
-## Goal
+Build workflowは`contents: read`だけを持ちます。
 
-Validate installation and first-use workflow with a small number of real users, including people who do not normally use Git or develop software.
+Publish workflowは`actions: read`と`contents: write`に分離し、protected environmentのhuman approval後にGitHub prereleaseを作ります。
 
-## Initial environment
+publish時はdefault branch HEADが`P`であることをapproval前後に確認します。
 
-- Ubuntu 24.04
-- conda environment with Python 3.12
-- trial wheel installation
-- no source checkout
+### M3 Ubuntu 24.04 Trial
 
-## Five-minute trial
+reference machineでtechnical qualificationを行った後、開発者以外の3人にtrial wheelを配ります。
 
-```text
-Install
-  ↓
-Launch
-  ↓
-Try Sample
-  ↓
-Crop
-  ↓
-ASD
-  ↓
-Save Project
-  ↓
-Close Studio
-  ↓
-Reopen
-  ↓
-Restore
-```
+conda environment作成とinstall/launchは3人全員が説明なしで完了する必要があります。
 
-The observer should avoid teaching the UI step by step. The goal is to see whether the user can complete the workflow from the Quick Start and the application itself.
+Welcome表示後の5分workflowは、3人中2人以上の完了を条件にします。
 
-## Evaluate
+P0 issueとproject/recoveryに関するP1 issueは残せません。
 
-- Can the user create the conda environment and install the wheel?
-- Does `gwexpy-studio` start without development knowledge?
-- Is the Welcome screen understandable?
-- Are Sources, Metadata, History, Save Project, and Export Python distinguishable?
-- Can the user perform Crop and ASD without assistance?
-- Can the user reopen and restore the analysis?
-- Which messages, parameters, or concepts are confusing?
+同じP1 issueが2人以上に起きた時点でtrialを止め、修正します。
 
----
+### M4 Windows 11、WSL2、WSLg Trial
 
-# Phase 4 — Human Trial 2: Windows 11 + WSL2
+Windows 11 x86_64上のUbuntu 24.04 x86_64と、Windows 11 ARM64上のUbuntu 24.04 aarch64を別々にtechnical qualificationします。
 
-## Goal
+WSLg、display scaling、clipboard、worker lifecycle、shared memory、`/mnt/c`、日本語path、spaceを含むpath、save/reopen、recovery、Python exportを確認します。
 
-Validate the same workflow in an environment expected to be common among target users.
+human trialは3人合計とし、x86_64とARM64をそれぞれ少なくとも1人含めます。
 
-## Initial target
+ARM ChromebookはLinux aarch64の補助smoke testです。
 
-- Windows 11
-- WSL2
-- Ubuntu 24.04 under WSL
-- WSLg
-- conda Python 3.12
-- the same trial wheel
+macOSはM6以降にApple Siliconを優先して外部testerが確認します。
 
-## Additional checks
+## M5以降
 
-- WSLg GUI rendering and display scaling
-- worker spawn/exit and shared-memory cleanup
-- files inside the WSL filesystem
-- files under `/mnt/c/...`
-- spaces and non-ASCII paths
-- project save/reopen
-- source-file change detection
-- crash/recovery behavior
-- clipboard and Python export
+M5ではUbuntuとWSL2のfeedbackをinstallation、UX、scientific workflowに分類して修正します。
 
-The result of this trial will determine whether WSL is sufficient for early Windows users or whether native Windows packaging should be prioritized.
+必要性が高ければ、HistoryのParameters、Result、Show Pythonを優先します。
 
----
+M6ではDebian 13とmacOSをwheelとcondaでtechnical trialします。
 
-# Phase 5 — Trial feedback and stabilization
+M7では、M3とM4のhuman trial、clean wheel install、project/recovery、Quick Start、build identityが揃った時点でPyPI alphaを検討します。
 
-Issues found during Ubuntu and WSL trials will be grouped into three categories.
+M8ではtrial feedbackに基づき、AppImage、standalone directory、`.deb`、`.app`、DMG、native Windows distributionを優先度順に進めます。
 
-## Installation
+その後はShow Python、before/after比較、overlay、Preview/Apply、mouse crop、CSV/HDF5 onboarding、multi-channel analysis、plot styling、Marimo export、portable projectを強化します。
 
-Examples:
+## 最初の成功条件
 
-- Python version constraints
-- conda environment creation
-- dependency resolution
-- PySide6 installation
-- optional I/O backends
-
-## User experience
-
-Examples:
-
-- unclear data/object selection
-- confusing History or recovery behavior
-- Save Project vs Export Python
-- difficult parameter entry
-- unclear error messages
-
-## Scientific workflow
-
-Examples:
-
-- filter parameter semantics
-- PSD vs ASD choice
-- transfer-function direction
-- container/member selection
-- Bode interpretation
-
-No major new analysis feature is required during this phase unless the trial exposes a blocker.
-
-A specific question to evaluate is whether the learning-oriented goal needs a stronger GUI-to-Python bridge, for example:
-
-```text
-History item
-  ├─ Parameters
-  ├─ Result
-  └─ Show Python
-```
-
-The priority of such a feature should be determined from actual user feedback rather than assumed in advance.
-
----
-
-# Phase 6 — Wider platform trial
-
-After the Ubuntu/WSL path is stable, expand the wheel-based trial.
-
-## Debian 13
-
-- Do not depend on Debian's system Python version.
-- Use a dedicated conda Python 3.12 environment initially.
-- Validate installation, GUI, worker behavior, I/O, project persistence, recovery, and export.
-- If the conda/pip path remains a significant usability barrier, prioritize a `.deb` or other native Linux distribution path.
-
-## macOS
-
-- Begin with wheel + conda Python 3.12 technical trials.
-- Validate Apple Silicon first if that matches the available user hardware.
-- Check PySide6, worker/process behavior, shared memory, project paths, file dialogs, shortcuts, recovery, and export.
-- Native `.app`/DMG packaging and signing/notarization are later distribution work, not prerequisites for the first technical trial.
-
----
-
-# Phase 7 — PyPI `0.1.0a1`
-
-PyPI publication should happen **after** the first real-user trials.
-
-Minimum publication criteria:
-
-- Ubuntu 24.04 human trial completed
-- Windows 11 + WSL2 human trial completed
-- clean wheel installation verified
-- primary GUI workflow verified
-- project save/reopen/recovery verified
-- no known major installation or usability blocker
-- Quick Start validated by actual users
-- build identity and source provenance are clear
-
-Expected user installation path:
-
-```bash
-conda create -n gwexpy-studio python=3.12
-conda activate gwexpy-studio
-pip install gwexpy-studio
-gwexpy-studio
-```
-
-Git is not required for normal users.
-
----
-
-# Phase 8 — Native desktop distribution
-
-After the wheel/PyPI trial path is stable, reduce the installation barrier further.
-
-## Linux
-
-Candidates:
-
-- AppImage
-- standalone archive
-- `.deb`
-
-Long-term goal:
-
-```text
-Download
-  ↓
-Launch
-```
-
-## macOS
-
-- `.app`
-- DMG
-- Developer ID signing
-- notarization
-
-## Windows
-
-Use WSL trial feedback to decide priority. If native Windows is needed, investigate:
-
-- native standalone build
-- installer
-- Start-menu integration
-- file association
-
-The native packaging tracks do not need to complete simultaneously. A platform may enter trial distribution as soon as its own gate is satisfied.
-
----
-
-# Phase 9 — Product maturity
-
-Once installation and distribution are no longer the main blockers, continue improving the scientific workbench itself.
-
-| Area | Candidate work |
-| --- | --- |
-| Learning | Show Python; visible mapping from GUI operations to GWexpy APIs |
-| Comparison | before/after overlay; branch comparison; linked views |
-| Interaction | Preview/Apply; mouse-based Crop |
-| Data onboarding | generic CSV import; HDF5 browser; Raw/Logical views |
-| Analysis | further filter/resample/PSD workflows; multi-channel analysis; fitting |
-| Plotting | styling and publication-oriented export |
-| Notebook interoperability | Marimo export |
-| Projects | source relink; cache; more portable project handling |
-
----
-
-# Milestones
-
-| Milestone | Exit criterion |
-| --- | --- |
-| **M1 Public Source** | Public repository alone contains enough source/tests/build information to work on and verify the product |
-| **M2 Trial Wheel** | A user can install a fixed trial wheel without Git |
-| **M3 Ubuntu Trial** | Several users complete the five-minute workflow on Ubuntu 24.04 |
-| **M4 WSL2 Trial** | Primary workflows work on Windows 11 + WSL2/WSLg |
-| **M5 Feedback Fix** | Major installation/usability blockers from the first trials are resolved |
-| **M6 Wider Trial** | Debian 13 and macOS trials begin |
-| **M7 PyPI Alpha** | `pip install gwexpy-studio` is the supported alpha installation path |
-| **M8 Native Distribution** | At least one platform supports a Download → Launch style installation |
-
----
-
-## Immediate priority
-
-The immediate sequence is:
-
-```text
-1. Migrate the public-ready source to this repository
-2. Build a trial wheel
-3. Run small human trials on Ubuntu 24.04
-4. Run small human trials on Windows 11 + WSL2
-5. Fix the installation and UX problems found there
-6. Expand to Debian 13 and macOS
-7. Publish the PyPI alpha
-8. Continue native desktop packaging
-```
-
-The first user-facing success criterion is:
-
-> **A physics researcher or student who does not use Git can use conda + pip to start GWexpy Studio, inspect data, perform a basic analysis, and save the work within a short first-use session.**
+Gitを知らない研究者または学生が、condaとpipだけでStudioを起動し、5分以内にデータを見て基本解析を行い、作業を保存できることを最初の成功条件とします。
