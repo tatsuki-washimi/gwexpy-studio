@@ -52,17 +52,15 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "scripts/capture_trial_resolution.py" in workflow
     assert "scripts/assemble_trial_bundle.py" in workflow
     assert "scripts/verify_trial_bundle.py" in workflow
-    assert workflow.count("- name: Install Qt EGL runtime") == 2
+    assert workflow.count("- name: Install Qt GL runtime") == 2
     assert (
-        workflow.count(
-            "sudo apt-get install --no-install-recommends -y libegl1"
-        )
+        workflow.count("sudo apt-get install --no-install-recommends -y libegl1 libgl1")
         == 2
     )
-    assert workflow.index("Install Qt EGL runtime") < workflow.index(
+    assert workflow.index("Install Qt GL runtime") < workflow.index(
         "Create the x86_64 resolver environment"
     )
-    assert workflow.rindex("Install Qt EGL runtime") < workflow.index(
+    assert workflow.rindex("Install Qt GL runtime") < workflow.index(
         "Create the aarch64 resolver environment"
     )
     assert "trial-seed-${{ github.run_id }}-a${{ github.run_attempt }}" in workflow
@@ -121,12 +119,12 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> N
     assert "target-commitish" not in workflow
 
 
-def test_public_ci_installs_the_qt_egl_runtime_library() -> None:
+def test_public_ci_installs_the_qt_gl_runtime_libraries() -> None:
     """The hosted Linux runner must load PySide6 before GUI-related tests run."""
     workflow = _workflow("ci.yml")
 
-    assert "- name: Install Qt EGL runtime" in workflow
-    assert "sudo apt-get install --no-install-recommends -y libegl1" in workflow
-    assert workflow.index("Install Qt EGL runtime") < workflow.index(
+    assert "- name: Install Qt GL runtime" in workflow
+    assert "sudo apt-get install --no-install-recommends -y libegl1 libgl1" in workflow
+    assert workflow.index("Install Qt GL runtime") < workflow.index(
         "Create a Python environment"
     )

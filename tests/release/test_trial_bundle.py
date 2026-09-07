@@ -62,6 +62,29 @@ def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _os_runtime(architecture: str) -> dict[str, object]:
+    """Return strict direct Qt GL runtime evidence for one fixture host."""
+    dpkg_architecture = {"x86_64": "amd64", "aarch64": "arm64"}[architecture]
+    return {
+        "manager": "dpkg",
+        "packages": [
+            {
+                "architecture": dpkg_architecture,
+                "name": "libegl1",
+                "status": "installed",
+                "version": "1.7.0-1build1",
+            },
+            {
+                "architecture": dpkg_architecture,
+                "name": "libgl1",
+                "status": "installed",
+                "version": "1.7.0-1build1",
+            },
+        ],
+        "required_libraries": ["libEGL.so.1", "libGL.so.1"],
+    }
+
+
 def _wheel_metadata(version: str) -> bytes:
     """Render the dependency metadata accepted by the fixed M2 wheel policy."""
     lines = [
@@ -278,6 +301,7 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
                     "build_id": build_id,
                     "constraints_sha256": _sha256(constraints.read_bytes()),
                     "glibc_version": "2.39",
+                    "os_runtime": _os_runtime(architecture),
                     "os_id": "ubuntu",
                     "os_version": "24.04",
                     "phase_one": phase_one,
@@ -285,7 +309,7 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
                     "pip_version": "25.0.1",
                     "python_version": "3.12.12",
                     "runtime_artifacts": runtime_artifacts,
-                    "schema": 1,
+                    "schema": 2,
                     "source_manifest_sha256": identity["source_manifest_sha256"],
                     "source_sha": source_sha,
                     "staging_manifest_sha256": _sha256(staging_manifest.read_bytes()),
@@ -487,6 +511,56 @@ def test_assemble_and_verify_trial_bundle_round_trip(tmp_path: Path) -> None:
     assert verified["build"]["source_sha"] == "abcdef0123456789abcdef0123456789abcdef01"
 
 
+def test_assemble_rejects_a_resolution_without_strict_qt_gl_runtime(
+    tmp_path: Path,
+) -> None:
+    """The final bundle rejects missing or cross-architecture OS runtime evidence."""
+    inputs = _write_trial_inputs(tmp_path)
+    resolution = inputs["resolution_x86_64"]
+    document = json.loads(resolution.read_text(encoding="utf-8"))
+    os_runtime = document["os_runtime"]
+    assert isinstance(os_runtime, dict)
+    packages = os_runtime["packages"]
+    assert isinstance(packages, list)
+    packages[0]["architecture"] = "arm64"
+    resolution.write_bytes(_canonical_json(document))
+
+    with pytest.raises(_bundle().TrialBundleError, match="OS runtime"):
+        _assemble(inputs, tmp_path / "bundle")
+
+
+def test_verifier_rejects_a_rebound_bundle_with_noninstalled_qt_gl_runtime(
+    tmp_path: Path,
+) -> None:
+    """Rewritten hashes cannot legitimize a package that was not installed."""
+    inputs = _write_trial_inputs(tmp_path)
+    output = tmp_path / "bundle"
+    _assemble(inputs, output)
+    resolution_path = output / "resolution-ubuntu24-x86_64.json"
+    resolution = json.loads(resolution_path.read_text(encoding="utf-8"))
+    os_runtime = resolution["os_runtime"]
+    assert isinstance(os_runtime, dict)
+    packages = os_runtime["packages"]
+    assert isinstance(packages, list)
+    packages[1]["status"] = "not-installed"
+    resolution_path.write_bytes(_canonical_json(resolution))
+
+    trial_path = output / "TRIAL-MANIFEST.json"
+    trial = json.loads(trial_path.read_text(encoding="utf-8"))
+    architectures = trial["architectures"]
+    assert isinstance(architectures, dict)
+    x86_64 = architectures["x86_64"]
+    assert isinstance(x86_64, dict)
+    resolution_record = x86_64["resolution"]
+    assert isinstance(resolution_record, dict)
+    resolution_record["sha256"] = _sha256(resolution_path.read_bytes())
+    trial_path.write_bytes(_canonical_json(trial))
+    _refresh_checksums(output)
+
+    with pytest.raises(_bundle().TrialBundleError, match="OS runtime"):
+        _verifier().verify_trial_bundle(output)
+
+
 def test_assemble_never_replaces_a_preexisting_bundle(tmp_path: Path) -> None:
     """A same-name retry cannot replace evidence that was already published."""
     inputs = _write_trial_inputs(tmp_path)
@@ -508,6 +582,11 @@ def test_trial_quick_starts_describe_the_wheel_only_install_path() -> None:
 
     for document in (english, japanese):
         assert "conda create -n gwexpy-studio python=3.12" in document
+        assert "ctypes.CDLL" in document
+        assert "libEGL.so.1" in document
+        assert "libGL.so.1" in document
+        assert "libegl1 libgl1" in document
+        assert "sudo apt-get update" in document
         assert "sha256sum -c SHA256SUMS" in document
         assert "--only-binary=:all:" in document
         assert "constraints-ubuntu24-x86_64.txt" in document
@@ -515,6 +594,24 @@ def test_trial_quick_starts_describe_the_wheel_only_install_path() -> None:
         assert "gwexpy-studio" in document
         assert "git clone" not in document
         assert "pip install -e" not in document
+
+
+def test_trial_readiness_records_qt_gl_baselines_and_m1_workflow_scope() -> None:
+    """The human trials distinguish an OS runtime fix from GUI behavior."""
+    readiness = (
+        REPOSITORY_ROOT / "docs" / "release" / "0.1.0a1-trial-readiness.md"
+    ).read_text(encoding="utf-8")
+    roadmap = (REPOSITORY_ROOT / "ROADMAP.md").read_text(encoding="utf-8")
+
+    assert "included in the M1 public source" in readiness
+    assert "first builds and qualifies" in readiness
+    assert "libEGL.so.1" in readiness
+    assert "libGL.so.1" in readiness
+    assert "before remediation" in readiness
+    assert "WSLg" in readiness
+    assert "M1 public source" in roadmap
+    assert "M2" in roadmap
+    assert "初回buildとqualification" in roadmap
 
 
 def test_verifier_rejects_a_wheel_changed_after_assembly(tmp_path: Path) -> None:

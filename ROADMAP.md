@@ -35,7 +35,7 @@ public commit `P`は、local `.git`だけを除外して`manifest(S) == manifest
 
 public snapshotにはproduct source、public tests、fixtures、schemas、assets、packaging metadata、source identity tooling、docs、CIを含めます。
 
-trial wheelのbuild/publish workflowはM2で追加します。
+trial wheelのbuild/publish workflowはM1 public sourceに含め、M2で初回buildとqualificationを実行します。
 
 private audit evidence、internal note、private workflow data、harness、local build productは含めません。
 

@@ -70,6 +70,29 @@ def _gate():
     return importlib.import_module("scripts.run_trial_technical_gate")
 
 
+def _os_runtime(machine: str = "x86_64") -> dict[str, object]:
+    """Return the direct, path-free Qt GL runtime record for a fixture host."""
+    architecture = {"x86_64": "amd64", "aarch64": "arm64"}[machine]
+    return {
+        "manager": "dpkg",
+        "packages": [
+            {
+                "architecture": architecture,
+                "name": "libegl1",
+                "status": "installed",
+                "version": "1.7.0-1build1",
+            },
+            {
+                "architecture": architecture,
+                "name": "libgl1",
+                "status": "installed",
+                "version": "1.7.0-1build1",
+            },
+        ],
+        "required_libraries": ["libEGL.so.1", "libGL.so.1"],
+    }
+
+
 def _canonical_json(value: object) -> bytes:
     return (
         json.dumps(
@@ -703,6 +726,7 @@ def test_resolution_projection_keeps_only_artifact_identity_not_urls_or_paths(
         artifact=artifact,
         machine="x86_64",
         glibc_version="2.39",
+        os_runtime=_os_runtime(),
         python_version="3.12.12",
         pip_version="25.3",
         phase_one_report=report,
@@ -713,6 +737,8 @@ def test_resolution_projection_keeps_only_artifact_identity_not_urls_or_paths(
     encoded = _canonical_json(projection).decode("utf-8")
 
     assert projection["architecture"] == "x86_64"
+    assert projection["schema"] == 2
+    assert projection["os_runtime"] == _os_runtime()
     assert projection["runtime_artifacts"] == [
         {
             "filename": "numpy-2.3.1-cp312-cp312-manylinux_2_28_x86_64.whl",
@@ -733,6 +759,146 @@ def test_resolution_projection_keeps_only_artifact_identity_not_urls_or_paths(
     assert projection["phase_one"]["pip_inspect_sha256"] == _sha256(
         _canonical_json(projection["phase_one"]["inspect"])
     )
+
+
+@pytest.mark.parametrize(
+    ("machine", "dpkg_architecture"),
+    [("x86_64", "amd64"), ("aarch64", "arm64")],
+)
+def test_resolution_captures_only_direct_qt_gl_runtime_packages(
+    machine: str,
+    dpkg_architecture: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native qualification records the two direct Qt GL runtime packages."""
+    module = _resolution()
+    seen: dict[str, object] = {}
+
+    def query(command: object, **kwargs: object) -> SimpleNamespace:
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                f"ii \tlibegl1\t1.7.0-1build1\t{dpkg_architecture}\n"
+                f"ii \tlibgl1\t1.7.0-1build1\t{dpkg_architecture}\n"
+            ),
+        )
+
+    loaded: list[str] = []
+
+    def load(library: str) -> object:
+        loaded.append(library)
+        return object()
+
+    monkeypatch.setattr(module.subprocess, "run", query)
+    monkeypatch.setattr(module, "ctypes", SimpleNamespace(CDLL=load), raising=False)
+
+    assert module.capture_os_runtime(machine, cwd=tmp_path) == _os_runtime(machine)
+    assert seen["command"] == (
+        "dpkg-query",
+        "--show",
+        "--showformat=${db:Status-Abbrev}\\t${Package}\\t${Version}\\t${Architecture}\\n",
+        "libegl1",
+        "libgl1",
+    )
+    assert loaded == ["libEGL.so.1", "libGL.so.1"]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "machine", "load_error"),
+    [
+        (
+            "hi \tlibegl1\t1.7.0-1build1\tamd64\nii \tlibgl1\t1.7.0-1build1\tamd64\n",
+            "x86_64",
+            None,
+        ),
+        (
+            "ii libegl1 1.7.0-1build1 amd64\nii \tlibgl1\t1.7.0-1build1\tamd64\n",
+            "x86_64",
+            None,
+        ),
+        (
+            "ii \tlibegl1\t1.7.0-1build1\tarm64\nii \tlibgl1\t1.7.0-1build1\tarm64\n",
+            "x86_64",
+            None,
+        ),
+        (
+            "ii \tlibegl1\t/private/path\tamd64\nii \tlibgl1\t1.7.0-1build1\tamd64\n",
+            "x86_64",
+            None,
+        ),
+        (
+            "ii \tlibegl1\t1.7.0-1build1\tamd64\nii \tlibgl1\t1.7.0-1build1\tamd64\n",
+            "x86_64",
+            "libGL.so.1",
+        ),
+    ],
+)
+def test_resolution_rejects_invalid_direct_qt_gl_runtime(
+    stdout: str,
+    machine: str,
+    load_error: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing, unsafe, wrong-architecture, or unloadable GL evidence fails closed."""
+    module = _resolution()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=stdout),
+    )
+
+    def load(library: str) -> object:
+        if library == load_error:
+            raise OSError("missing")
+        return object()
+
+    monkeypatch.setattr(module, "ctypes", SimpleNamespace(CDLL=load), raising=False)
+
+    with pytest.raises(module.ResolutionError, match="Qt GL runtime"):
+        module.capture_os_runtime(machine, cwd=tmp_path)
+
+
+def test_resolution_rejects_an_unqueryable_direct_qt_gl_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed dpkg query cannot be treated as installed runtime evidence."""
+    module = _resolution()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
+
+    with pytest.raises(module.ResolutionError, match="package query failed"):
+        module.capture_os_runtime("x86_64", cwd=tmp_path)
+
+
+def test_resolution_requires_explicit_installed_status_in_qt_gl_runtime() -> None:
+    """A static resolution record must attest that each package is installed."""
+    module = _resolution()
+    runtime = {
+        "manager": "dpkg",
+        "packages": [
+            {
+                "architecture": "amd64",
+                "name": "libegl1",
+                "version": "1.7.0-1build1",
+            },
+            {
+                "architecture": "amd64",
+                "name": "libgl1",
+                "version": "1.7.0-1build1",
+            },
+        ],
+        "required_libraries": ["libEGL.so.1", "libGL.so.1"],
+    }
+
+    with pytest.raises(module.ResolutionError, match="Qt GL runtime package"):
+        module.validate_os_runtime(runtime, machine="x86_64")
 
 
 def test_resolution_requires_ubuntu_2404_os_release(tmp_path: Path) -> None:
@@ -797,6 +963,7 @@ def test_resolution_rejects_gate_identity_that_disagrees_with_the_wheel(
             artifact=artifact,
             machine="x86_64",
             glibc_version="2.39",
+            os_runtime=_os_runtime(),
             python_version="3.12.12",
             pip_version="25.3",
             phase_one_report=report,
@@ -1016,6 +1183,7 @@ def test_resolution_rejects_an_unsupported_pip_inspect_schema(
             artifact=artifact,
             machine="x86_64",
             glibc_version="2.39",
+            os_runtime=_os_runtime(),
             python_version="3.12.12",
             pip_version="25.3",
             phase_one_report=report,
@@ -1113,6 +1281,7 @@ def test_resolution_rejects_a_pip_version_that_would_leak_a_path(
             artifact=artifact,
             machine="x86_64",
             glibc_version="2.39",
+            os_runtime=_os_runtime(),
             python_version="3.12.12",
             pip_version="25.3+/private/host",
             phase_one_report=report,
@@ -1536,6 +1705,7 @@ def test_resolution_rejects_different_second_fresh_closure(
             artifact=artifact,
             machine="x86_64",
             glibc_version="2.39",
+            os_runtime=_os_runtime(),
             python_version="3.12.12",
             pip_version="25.3",
             phase_one_report=report("2.3.1"),
@@ -1598,6 +1768,7 @@ def test_resolution_rejects_a_different_second_installed_environment(
             artifact=artifact,
             machine="x86_64",
             glibc_version="2.39",
+            os_runtime=_os_runtime(),
             python_version="3.12.12",
             pip_version="25.3",
             phase_one_report=report,
@@ -1713,6 +1884,12 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
             "status": "passed",
         },
     )
+    monkeypatch.setattr(
+        _resolution(),
+        "capture_os_runtime",
+        lambda machine, *, cwd: _os_runtime(machine),
+        raising=False,
+    )
 
     constraints, resolution = _resolution().capture_trial_resolution(
         wheel=wheel,
@@ -1754,6 +1931,8 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
     ]
     assert document["phase_one"]["pip_report_sha256"] != ""
     assert document["phase_one"]["pip_inspect_sha256"] != ""
+    assert document["schema"] == 2
+    assert document["os_runtime"] == _os_runtime(expected_machine)
     assert document["technical_gate"] == {
         "architecture": expected_machine,
         "checks": {name: True for name in _gate()._CHECK_NAMES},
@@ -1789,6 +1968,12 @@ def test_failed_resolution_does_not_publish_an_empty_or_partial_output(
         raise _resolution().ResolutionError("simulated resolver failure")
 
     monkeypatch.setattr(_resolution(), "_run", fail_install)
+    monkeypatch.setattr(
+        _resolution(),
+        "capture_os_runtime",
+        lambda machine, *, cwd: _os_runtime(machine),
+        raising=False,
+    )
 
     with pytest.raises(_resolution().ResolutionError, match="simulated"):
         _resolution().capture_trial_resolution(
@@ -1823,6 +2008,12 @@ def test_capture_seals_the_verified_wheel_before_pip_can_reopen_its_path(
         raise _resolution().ResolutionError("intentional interruption")
 
     monkeypatch.setattr(_resolution(), "_run", interrupt_after_seal)
+    monkeypatch.setattr(
+        _resolution(),
+        "capture_os_runtime",
+        lambda machine, *, cwd: _os_runtime(machine),
+        raising=False,
+    )
 
     with pytest.raises(_resolution().ResolutionError, match="intentional"):
         _resolution().capture_trial_resolution(

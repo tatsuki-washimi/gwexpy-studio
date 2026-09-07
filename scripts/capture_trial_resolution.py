@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -207,10 +208,19 @@ _PACKAGE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*")
 _PYTHON_VERSION = re.compile(r"3\.12\.[0-9]+")
 _GLIBC_VERSION = re.compile(r"[0-9]+\.[0-9]+")
+_DEBIAN_VERSION = re.compile(r"[0-9][A-Za-z0-9.+:~_-]*")
 _MACHINES = frozenset({"x86_64", "aarch64"})
 _REQUIRED_OS_ID = "ubuntu"
 _REQUIRED_OS_VERSION = "24.04"
 _STUDIO_NAME = "gwexpy-studio"
+_OS_RUNTIME_MANAGER = "dpkg"
+_OS_RUNTIME_PACKAGES = ("libegl1", "libgl1")
+_OS_RUNTIME_STATUS = "installed"
+_DPKG_ARCHITECTURES = {"x86_64": "amd64", "aarch64": "arm64"}
+_REQUIRED_QT_GL_LIBRARIES = ("libEGL.so.1", "libGL.so.1")
+_DPKG_QUERY_FORMAT = (
+    "${db:Status-Abbrev}\\t${Package}\\t${Version}\\t${Architecture}\\n"
+)
 _GENERATED_WHEEL_MEMBERS = (
     ("src/gwexpy_studio/_version.py", "gwexpy_studio/_version.py"),
     (
@@ -448,6 +458,7 @@ def build_resolution_projection(
     artifact: TrialArtifact,
     machine: str,
     glibc_version: str,
+    os_runtime: Mapping[str, object],
     python_version: str,
     pip_version: str,
     phase_one_report: Mapping[str, object],
@@ -472,6 +483,7 @@ def build_resolution_projection(
     if os_id != _REQUIRED_OS_ID or os_version != _REQUIRED_OS_VERSION:
         raise ResolutionError("resolution host must be Ubuntu 24.04")
     pip_version = _required_version(pip_version, "pip version")
+    validated_os_runtime = validate_os_runtime(os_runtime, machine=machine)
     phase_one = _phase_projection(
         report=phase_one_report,
         inspect=phase_one_inspect,
@@ -516,12 +528,13 @@ def build_resolution_projection(
         "glibc_version": glibc_version,
         "os_id": os_id,
         "os_version": os_version,
+        "os_runtime": validated_os_runtime,
         "phase_one": phase_one,
         "phase_two": phase_two,
         "pip_version": pip_version,
         "python_version": python_version,
         "runtime_artifacts": runtime,
-        "schema": 1,
+        "schema": 2,
         "source_manifest_sha256": artifact.source_manifest_sha256,
         "source_sha": artifact.source_sha,
         "staging_manifest_sha256": artifact.staging_manifest_sha256,
@@ -578,6 +591,7 @@ def capture_trial_resolution(
         temporary_parent = _trial_temporary_parent(checkout)
     except _TrialBuildError as exc:
         raise ResolutionError("resolution output location is unsafe") from exc
+    os_runtime = capture_os_runtime(machine, cwd=checkout)
     with tempfile.TemporaryDirectory(
         prefix=".gwexpy-studio-resolution-",
         dir=temporary_parent,
@@ -646,6 +660,7 @@ def capture_trial_resolution(
             artifact=artifact,
             machine=machine,
             glibc_version=glibc_version,
+            os_runtime=os_runtime,
             python_version=_python_version(phase_two.python, workspace),
             pip_version=pip_version,
             phase_one_report=phase_one_report,
@@ -1262,6 +1277,139 @@ def _canonical_json(value: object) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+def capture_os_runtime(machine: str, *, cwd: Path) -> dict[str, object]:
+    """Capture the direct OS packages and SONAMEs required by Qt's GL runtime."""
+    expected_architecture = _dpkg_architecture(machine)
+    try:
+        completed = subprocess.run(
+            (
+                "dpkg-query",
+                "--show",
+                f"--showformat={_DPKG_QUERY_FORMAT}",
+                *_OS_RUNTIME_PACKAGES,
+            ),
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=60,
+            env=_subprocess_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResolutionError("Qt GL runtime package query failed") from exc
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        raise ResolutionError("Qt GL runtime package query failed")
+
+    packages: list[dict[str, str]] = []
+    lines = completed.stdout.splitlines()
+    if len(lines) != len(_OS_RUNTIME_PACKAGES):
+        raise ResolutionError("Qt GL runtime package query is incomplete")
+    for expected_name, line in zip(_OS_RUNTIME_PACKAGES, lines, strict=True):
+        fields = line.split("\t")
+        if len(fields) != 4:
+            raise ResolutionError("Qt GL runtime package query is malformed")
+        status, name, version, architecture = fields
+        if status != "ii ":
+            raise ResolutionError("Qt GL runtime package is not installed")
+        if name != expected_name or architecture != expected_architecture:
+            raise ResolutionError("Qt GL runtime package identity is invalid")
+        packages.append(
+            {
+                "architecture": architecture,
+                "name": name,
+                "status": _OS_RUNTIME_STATUS,
+                "version": _required_debian_version(
+                    version, "Qt GL runtime package version"
+                ),
+            }
+        )
+
+    runtime = validate_os_runtime(
+        {
+            "manager": _OS_RUNTIME_MANAGER,
+            "packages": packages,
+            "required_libraries": list(_REQUIRED_QT_GL_LIBRARIES),
+        },
+        machine=machine,
+    )
+    for library in _REQUIRED_QT_GL_LIBRARIES:
+        try:
+            ctypes.CDLL(library)
+        except OSError as exc:
+            raise ResolutionError("Qt GL runtime library cannot load") from exc
+    return runtime
+
+
+def validate_os_runtime(value: object, *, machine: str) -> dict[str, object]:
+    """Validate the path-free direct Qt GL runtime evidence for one architecture."""
+    if not isinstance(value, Mapping):
+        raise ResolutionError("Qt GL runtime evidence is invalid")
+    _require_exact_keys(
+        value,
+        {"manager", "packages", "required_libraries"},
+        "Qt GL runtime evidence",
+    )
+    if value.get("manager") != _OS_RUNTIME_MANAGER:
+        raise ResolutionError("Qt GL runtime package manager is invalid")
+    expected_architecture = _dpkg_architecture(machine)
+    packages_value = value.get("packages")
+    if not isinstance(packages_value, list) or len(packages_value) != len(
+        _OS_RUNTIME_PACKAGES
+    ):
+        raise ResolutionError("Qt GL runtime packages are invalid")
+    packages: list[dict[str, str]] = []
+    for expected_name, package_value in zip(
+        _OS_RUNTIME_PACKAGES, packages_value, strict=True
+    ):
+        if not isinstance(package_value, Mapping):
+            raise ResolutionError("Qt GL runtime package is invalid")
+        _require_exact_keys(
+            package_value,
+            {"architecture", "name", "status", "version"},
+            "Qt GL runtime package",
+        )
+        name = package_value.get("name")
+        architecture = package_value.get("architecture")
+        status = package_value.get("status")
+        if (
+            name != expected_name
+            or architecture != expected_architecture
+            or status != _OS_RUNTIME_STATUS
+        ):
+            raise ResolutionError("Qt GL runtime package identity is invalid")
+        packages.append(
+            {
+                "architecture": expected_architecture,
+                "name": expected_name,
+                "status": _OS_RUNTIME_STATUS,
+                "version": _required_debian_version(
+                    package_value.get("version"), "Qt GL runtime package version"
+                ),
+            }
+        )
+    libraries = value.get("required_libraries")
+    if not isinstance(libraries, list) or tuple(libraries) != _REQUIRED_QT_GL_LIBRARIES:
+        raise ResolutionError("Qt GL runtime libraries are invalid")
+    return {
+        "manager": _OS_RUNTIME_MANAGER,
+        "packages": packages,
+        "required_libraries": list(_REQUIRED_QT_GL_LIBRARIES),
+    }
+
+
+def _dpkg_architecture(machine: str) -> str:
+    try:
+        return _DPKG_ARCHITECTURES[machine]
+    except KeyError as exc:
+        raise ResolutionError("Qt GL runtime architecture is unsupported") from exc
+
+
+def _required_debian_version(value: object, label: str) -> str:
+    if not isinstance(value, str) or _DEBIAN_VERSION.fullmatch(value) is None:
+        raise ResolutionError(f"{label} is invalid")
+    return value
 
 
 def _machine() -> str:

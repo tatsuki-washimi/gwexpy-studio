@@ -27,6 +27,36 @@ conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
 ```
 
+## Check the Qt GL runtime
+
+Before installing the wheel, check that the Ubuntu host can load the two Qt GL
+runtime libraries.
+
+```bash
+python - <<'PY'
+import ctypes
+
+for library in ("libEGL.so.1", "libGL.so.1"):
+    ctypes.CDLL(library)
+
+print("Qt GL runtime: OK")
+PY
+```
+
+If this command fails, run the following commands and then repeat the
+preflight.
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends -y libegl1 libgl1
+```
+
+Under WSL2, run these commands inside the Ubuntu 24.04 distribution, not in
+Windows PowerShell.
+
+If `sudo` is unavailable, ask the Ubuntu or WSL administrator to install
+`libegl1` and `libgl1`; do not continue until the preflight reports `OK`.
+
 ## Install the trial wheel
 
 Check the Linux architecture.
