@@ -145,6 +145,52 @@ def test_installed_package_must_be_under_site_packages_and_outside_checkout(
         )
 
 
+def test_installed_package_ignores_absent_site_package_candidates(
+    tmp_path: Path,
+) -> None:
+    """Ubuntu's venv may report absent dist-packages roots alongside purelib."""
+    checkout = tmp_path / "public-p"
+    checkout.mkdir()
+    purelib = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+    installed_module = purelib / "gwexpy_studio" / "__init__.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_text("", encoding="utf-8")
+    absent_site_roots = (
+        tmp_path / "venv" / "local" / "lib" / "python3.12" / "dist-packages",
+        tmp_path / "venv" / "lib" / "python3" / "dist-packages",
+        tmp_path / "venv" / "lib" / "python3.12" / "dist-packages",
+    )
+
+    _gate().verify_installed_module_path(
+        module_path=installed_module,
+        site_roots=(purelib, *absent_site_roots),
+        checkout_root=checkout,
+    )
+
+
+def test_installed_package_rejects_only_absent_site_package_candidates(
+    tmp_path: Path,
+) -> None:
+    """Skipping Ubuntu's absent candidates must not permit an unrooted import."""
+    checkout = tmp_path / "public-p"
+    checkout.mkdir()
+    foreign_module = tmp_path / "foreign" / "gwexpy_studio" / "__init__.py"
+    foreign_module.parent.mkdir(parents=True)
+    foreign_module.write_text("", encoding="utf-8")
+    absent_site_roots = (
+        tmp_path / "venv" / "local" / "lib" / "python3.12" / "dist-packages",
+        tmp_path / "venv" / "lib" / "python3" / "dist-packages",
+        tmp_path / "venv" / "lib" / "python3.12" / "dist-packages",
+    )
+
+    with pytest.raises(_gate().GateError, match="site-packages"):
+        _gate().verify_installed_module_path(
+            module_path=foreign_module,
+            site_roots=absent_site_roots,
+            checkout_root=checkout,
+        )
+
+
 def test_gate_environment_isolated_and_result_is_bounded_path_free(
     tmp_path: Path,
 ) -> None:
