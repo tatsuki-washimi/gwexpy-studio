@@ -119,6 +119,48 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> N
     assert "target-commitish" not in workflow
 
 
+def test_publish_trial_workflow_keeps_trial_prereleases_non_latest() -> None:
+    """The release command and post-publish check preserve trial visibility."""
+    workflow = _workflow("publish-trial.yml")
+
+    release_start = workflow.index('gh release create "$TAG"')
+    release_end = workflow.index("\n\n      - name:", release_start)
+    release_block = workflow[release_start:release_end]
+    post_publish_start = workflow.index(
+        "- name: Verify the release still names the tag at P"
+    )
+    post_publish_block = workflow[post_publish_start:]
+    validation_start = workflow.index("gh api graphql", post_publish_start)
+    validation_block = workflow[validation_start:]
+
+    assert "--latest=false" in release_block
+    assert release_start < validation_start
+    assert "query($owner: String!, $name: String!, $tag: String!)" in validation_block
+    assert '-f owner="$owner"' in validation_block
+    assert '-f name="$name"' in validation_block
+    assert '-f tag="$TAG"' in validation_block
+    assert "repository(owner: $owner, name: $name)" in validation_block
+    assert (
+        "release(tagName: $tag) { tagName isPrerelease isLatest }" in validation_block
+    )
+    assert "release(tagName: $tag)" in validation_block
+    assert "tagName" in validation_block
+    assert "isPrerelease" in validation_block
+    assert "isLatest" in validation_block
+    assert '"repos/$REPOSITORY/git/ref/tags/$TAG"' in post_publish_block
+    assert '"repos/$REPOSITORY/releases/tags/$TAG"' in post_publish_block
+    assert 'object_.get("type") != "commit"' in post_publish_block
+    assert 'object_.get("sha") != sys.argv[4]' in post_publish_block
+    assert 'rest_release.get("tag_name") != sys.argv[5]' in post_publish_block
+    assert 'rest_release.get("prerelease") is not True' in post_publish_block
+    assert "isinstance(data, dict)" in validation_block
+    assert "isinstance(repository, dict)" in validation_block
+    assert "isinstance(release, dict)" in validation_block
+    assert 'release.get("tagName") != sys.argv[5]' in validation_block
+    assert 'release.get("isPrerelease") is not True' in validation_block
+    assert 'release.get("isLatest") is not False' in validation_block
+
+
 def test_public_ci_installs_the_qt_gl_runtime_libraries() -> None:
     """The hosted Linux runner must load PySide6 before GUI-related tests run."""
     workflow = _workflow("ci.yml")
