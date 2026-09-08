@@ -93,7 +93,19 @@ def verify_installed_module_path(
         raise GateError("installed package path cannot be resolved") from exc
     if _is_within(module, checkout):
         raise GateError("Studio imported from the checkout")
-    roots = tuple(root.resolve(strict=True) for root in site_roots)
+    roots: list[Path] = []
+    for root in site_roots:
+        try:
+            resolved_root = root.resolve(strict=True)
+        except FileNotFoundError:
+            # Ubuntu's system-Python venv reports optional dist-packages paths
+            # which do not necessarily exist in the fresh environment.
+            continue
+        except OSError as exc:
+            raise GateError("installed site-packages path cannot be resolved") from exc
+        if not resolved_root.is_dir():
+            raise GateError("installed site-packages path is not a directory")
+        roots.append(resolved_root)
     if not roots or not any(_is_within(module, root) for root in roots):
         raise GateError("Studio did not import from installed site-packages")
 
