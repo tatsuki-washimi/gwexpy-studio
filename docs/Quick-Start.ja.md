@@ -29,6 +29,34 @@ conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
 ```
 
+## Qt GL runtimeの確認
+
+wheelをinstallする前に、Ubuntu hostがQt GL runtimeの二つのlibraryをloadできることを確認します。
+
+```bash
+python - <<'PY'
+import ctypes
+
+for library in ("libEGL.so.1", "libGL.so.1"):
+    ctypes.CDLL(library)
+
+print("Qt GL runtime: OK")
+PY
+```
+
+このcommandが失敗した場合は、次を実行してからpreflightをもう一度実行します。
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends -y libegl1 libgl1
+```
+
+WSL2では、Windows PowerShellではなくUbuntu 24.04 distribution内のterminalで実行してください。
+
+`sudo`を使えない場合は、UbuntuまたはWSLの管理者に`libegl1`と`libgl1`のinstallを依頼してください。
+
+preflightが`OK`になるまで次へ進まないでください。
+
 ## 試用版 wheel の install
 
 Linux architecture を確認します。

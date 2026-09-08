@@ -154,6 +154,7 @@ _RESOLUTION_FIELDS = {
     "glibc_version",
     "os_id",
     "os_version",
+    "os_runtime",
     "phase_one",
     "phase_two",
     "pip_version",
@@ -575,7 +576,7 @@ def _validate_resolution_document(
     wheel_sha256: str,
 ) -> dict[str, object]:
     """Bind one captured native closure to the final wheel identity."""
-    if document.get("schema") != 1 or document.get("architecture") != architecture:
+    if document.get("schema") != 2 or document.get("architecture") != architecture:
         raise TrialBundleError("resolution architecture is invalid")
     if architecture not in _ARCHITECTURES:
         raise TrialBundleError("resolution architecture is unsupported")
@@ -591,6 +592,12 @@ def _validate_resolution_document(
             raise TrialBundleError("resolution identity does not match the wheel")
     if document.get("os_id") != "ubuntu" or document.get("os_version") != "24.04":
         raise TrialBundleError("resolution host is not Ubuntu 24.04")
+    try:
+        _trial_resolution.validate_os_runtime(
+            document.get("os_runtime"), machine=architecture
+        )
+    except _trial_resolution.ResolutionError as exc:
+        raise TrialBundleError("resolution OS runtime is invalid") from exc
     glibc_version = document.get("glibc_version")
     if not isinstance(glibc_version, str) or not re.fullmatch(
         r"[0-9]+\.[0-9]+", glibc_version
