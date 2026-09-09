@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
+import os
 import stat
 import sys
 import zipfile
@@ -67,19 +69,27 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
     """Verify sidecar, outer archive safety, and delegated internal bytes."""
     archive = Path(archive_path)
     sidecar = Path(sidecar_path)
-    if not archive.is_file() or not sidecar.is_file():
-        raise TrialReleaseError("archive or sidecar is missing")
-    expected_name = archive.name
+    try:
+        archive_bytes = _read_stable_path(archive, "archive")
+        sidecar_bytes = _read_stable_path(sidecar, "sidecar")
+    except OSError as exc:
+        raise TrialReleaseError("archive or sidecar is missing") from exc
+    return _verify_release_bytes(archive.name, archive_bytes, sidecar_bytes)
+
+
+def _verify_release_bytes(
+    archive_name: str, archive_bytes: bytes, sidecar_bytes: bytes
+) -> dict[str, object]:
+    """Verify one already-captured archive and sidecar byte snapshot."""
     expected_line = (
-        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {expected_name}\n"
+        f"{hashlib.sha256(archive_bytes).hexdigest()}  {archive_name}\n".encode(
+            "ascii"
+        )
     )
+    if sidecar_bytes != expected_line:
+        raise TrialReleaseError("sidecar digest or filename is incorrect")
     try:
-        if sidecar.read_text(encoding="ascii") != expected_line:
-            raise TrialReleaseError("sidecar digest or filename is incorrect")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise TrialReleaseError("sidecar is invalid") from exc
-    try:
-        with zipfile.ZipFile(archive) as contents:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as contents:
             infos = contents.infolist()
             if not infos:
                 raise TrialReleaseError("archive is empty")
@@ -121,7 +131,7 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
     if not isinstance(build, dict) or not isinstance(build.get("id"), str):
         raise TrialReleaseError("verified bundle has no build ID")
     expected_root = f"gwexpy-studio-trial-{build['id']}"
-    if root != expected_root or archive.name != f"{expected_root}.zip":
+    if root != expected_root or archive_name != f"{expected_root}.zip":
         raise TrialReleaseError("archive root or filename does not match build ID")
     return manifest
 
@@ -129,32 +139,82 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
 def verify_trial_release_directory(release_directory: Path) -> dict[str, object]:
     """Verify exactly one archive and its matching sidecar in a directory."""
     directory = Path(release_directory)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
-        status = directory.stat()
-        entries = list(directory.iterdir())
+        directory_fd = os.open(directory, flags)
     except OSError as exc:
         raise TrialReleaseError("release directory cannot be inspected") from exc
-    if not stat.S_ISDIR(status.st_mode):
-        raise TrialReleaseError("release path is not a directory")
-    if len(entries) != 2:
-        raise TrialReleaseError("release directory must contain exactly two files")
-    for entry in entries:
-        try:
-            entry_status = entry.lstat()
-        except OSError as exc:
-            raise TrialReleaseError(
-                "release directory entry cannot be inspected"
-            ) from exc
-        if not stat.S_ISREG(entry_status.st_mode):
-            raise TrialReleaseError("release directory entries must be regular files")
-    archives = [entry for entry in entries if entry.name.endswith(".zip")]
-    if len(archives) != 1:
-        raise TrialReleaseError("release directory must contain one ZIP archive")
-    archive = archives[0]
-    sidecar = directory / f"{archive.name}.sha256"
-    if sidecar not in entries:
-        raise TrialReleaseError("release directory sidecar name is incorrect")
-    return verify_trial_release(archive, sidecar)
+    try:
+        status = os.fstat(directory_fd)
+        if not stat.S_ISDIR(status.st_mode):
+            raise TrialReleaseError("release path is not a directory")
+        names = os.listdir(directory_fd)
+        if len(names) != 2:
+            raise TrialReleaseError("release directory must contain exactly two files")
+        archives = [name for name in names if name.endswith(".zip")]
+        if len(archives) != 1:
+            raise TrialReleaseError("release directory must contain one ZIP archive")
+        archive_name = archives[0]
+        sidecar_name = f"{archive_name}.sha256"
+        if sidecar_name not in names:
+            raise TrialReleaseError("release directory sidecar name is incorrect")
+        archive_bytes = _read_stable_at(directory_fd, archive_name, "archive")
+        sidecar_bytes = _read_stable_at(directory_fd, sidecar_name, "sidecar")
+        final_status = os.fstat(directory_fd)
+        if (
+            os.listdir(directory_fd) != names
+            or final_status.st_dev != status.st_dev
+            or final_status.st_ino != status.st_ino
+            or final_status.st_mtime_ns != status.st_mtime_ns
+            or final_status.st_ctime_ns != status.st_ctime_ns
+        ):
+            raise TrialReleaseError("release directory changed while being read")
+        return _verify_release_bytes(archive_name, archive_bytes, sidecar_bytes)
+    except OSError as exc:
+        raise TrialReleaseError("release file cannot be read safely") from exc
+    finally:
+        os.close(directory_fd)
+
+
+def _read_stable_path(path: Path, label: str) -> bytes:
+    """Read one regular file through a no-follow descriptor."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        return _read_stable_file(descriptor, label)
+    finally:
+        os.close(descriptor)
+
+
+def _read_stable_at(directory_fd: int, name: str, label: str) -> bytes:
+    """Read one directory entry through its already-open parent descriptor."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(name, flags, dir_fd=directory_fd)
+    try:
+        return _read_stable_file(descriptor, label)
+    finally:
+        os.close(descriptor)
+
+
+def _read_stable_file(descriptor: int, label: str) -> bytes:
+    """Read a regular descriptor and reject identity or metadata changes."""
+    initial = os.fstat(descriptor)
+    if not stat.S_ISREG(initial.st_mode):
+        raise TrialReleaseError(f"{label} is not a regular file")
+    content = bytearray()
+    while chunk := os.read(descriptor, 1024 * 1024):
+        content.extend(chunk)
+    final = os.fstat(descriptor)
+    if (
+        initial.st_dev != final.st_dev
+        or initial.st_ino != final.st_ino
+        or initial.st_size != final.st_size
+        or initial.st_mtime_ns != final.st_mtime_ns
+        or initial.st_ctime_ns != final.st_ctime_ns
+    ):
+        raise TrialReleaseError(f"{label} changed while being read")
+    return bytes(content)
 
 
 def _parser() -> argparse.ArgumentParser:

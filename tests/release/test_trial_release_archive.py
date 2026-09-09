@@ -210,6 +210,34 @@ def test_directory_verifier_requires_exact_archive_and_sidecar_pair(
         _module().verify_trial_release_directory(release)
 
 
+def test_directory_verifier_rejects_symlinked_release_directory(tmp_path: Path) -> None:
+    _, archive, _ = _archive(tmp_path)
+    link = tmp_path / "release-link"
+    link.symlink_to(archive.parent, target_is_directory=True)
+    with pytest.raises(_module().TrialReleaseError, match="directory"):
+        _module().verify_trial_release_directory(link)
+
+
+def test_verifier_does_not_reopen_archive_path_after_stable_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, archive, sidecar = _archive(tmp_path)
+    module = _module()
+    original_read = module._read_stable_file
+    reads = 0
+
+    def read_once(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        data = original_read(*args, **kwargs)
+        if reads == 1:
+            archive.write_bytes(b"replaced after descriptor read")
+        return data
+
+    monkeypatch.setattr(module, "_read_stable_file", read_once)
+    assert module.verify_trial_release(archive, sidecar)["schema"] == 3
+
+
 @pytest.mark.parametrize("case", ["missing", "wrong-name", "wrong-content"])
 def test_directory_verifier_rejects_missing_or_malformed_sidecar(
     tmp_path: Path, case: str
