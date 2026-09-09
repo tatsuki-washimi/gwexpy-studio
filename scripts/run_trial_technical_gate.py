@@ -59,7 +59,7 @@ _PYTHON_VERSION = re.compile(r"3\.12\.[0-9]+")
 _SOURCE_SHA = re.compile(r"[0-9a-f]{40}")
 _BUILD_ID = re.compile(r"P-[0-9a-f]{7}-[0-9]{8}-r[1-9][0-9]*-a[1-9][0-9]*")
 _TRIAL_VERSION = re.compile(
-    r"0\.1\.0a1\+trial\.p\.[0-9a-f]{7}\.[0-9]{8}\.r[1-9][0-9]*\.a[1-9][0-9]*"
+    r"0\.1\.0a1\+trial\.p\.g[0-9a-f]{7}\.[0-9]{8}\.r[1-9][0-9]*\.a[1-9][0-9]*"
 )
 _SEALED_GATE_BOOTSTRAP = (
     "import os as _os\n"

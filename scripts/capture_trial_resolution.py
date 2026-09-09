@@ -200,7 +200,7 @@ _BUILD_ID = re.compile(
     r"r(?P<run>[1-9][0-9]*)-a(?P<attempt>[1-9][0-9]*)"
 )
 _TRIAL_VERSION = re.compile(
-    r"0\.1\.0a1\+trial\.p\.(?P<sha>[0-9a-f]{7})\."
+    r"0\.1\.0a1\+trial\.p\.g(?P<sha>[0-9a-f]{7})\."
     r"(?P<date>[0-9]{8})\.r(?P<run>[1-9][0-9]*)\.a(?P<attempt>[1-9][0-9]*)"
 )
 _WHEEL_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*\.whl")

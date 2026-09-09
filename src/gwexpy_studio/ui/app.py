@@ -61,7 +61,7 @@ _TRIAL_BUILD_ID = re.compile(
 _TRIAL_SOURCE_SHA = re.compile(r"[0-9a-f]{40}")
 _TRIAL_SOURCE_MANIFEST_SHA256 = re.compile(r"[0-9a-f]{64}")
 _TRIAL_VERSION = re.compile(
-    r"0\.1\.0a1\+trial\.p\.([0-9a-f]{7})\.([0-9]{8})\.r"
+    r"0\.1\.0a1\+trial\.p\.g([0-9a-f]{7})\.([0-9]{8})\.r"
     r"([1-9][0-9]*)\.a([1-9][0-9]*)"
 )
 

@@ -11,6 +11,7 @@ from base64 import urlsafe_b64encode
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 from scripts.export_release_source import export_release_source
 from scripts.release_source_manifest import (
@@ -151,7 +152,7 @@ def test_trial_identity_is_derived_and_rejects_unsafe_inputs() -> None:
     )
 
     assert identity.build_id == "P-aaaaaaa-20260907-r12-a3"
-    assert identity.version == "0.1.0a1+trial.p.aaaaaaa.20260907.r12.a3"
+    assert identity.version == "0.1.0a1+trial.p.gaaaaaaa.20260907.r12.a3"
     assert identity.source_sha == source_sha
 
     for kwargs, label in (
@@ -171,6 +172,23 @@ def test_trial_identity_is_derived_and_rejects_unsafe_inputs() -> None:
         arguments.update(kwargs)
         with pytest.raises(builder.TrialBuildError, match=label):
             builder.derive_trial_identity(**arguments)
+
+
+def test_trial_identity_preserves_an_all_numeric_short_sha() -> None:
+    """PEP 440 normalization must not erase a leading zero from the source SHA."""
+    builder = _builder()
+    source_sha = "0854741" + "a" * 33
+
+    identity = builder.derive_trial_identity(
+        source_sha=source_sha,
+        utc_date="20260907",
+        run=1,
+        attempt=1,
+    )
+
+    assert identity.build_id == "P-0854741-20260907-r1-a1"
+    assert identity.version == "0.1.0a1+trial.p.g0854741.20260907.r1.a1"
+    assert str(Version(identity.version)) == identity.version
 
 
 def test_version_delta_rejects_a_nontrial_base_version() -> None:
@@ -399,7 +417,7 @@ def test_staged_trial_build_preserves_p_and_binds_the_wheel(
     source, source_sha = public_checkout
     short_sha = source_sha[:7]
     build_id = f"P-{short_sha}-20260907-r2-a3"
-    version = f"0.1.0a1+trial.p.{short_sha}.20260907.r2.a3"
+    version = f"0.1.0a1+trial.p.g{short_sha}.20260907.r2.a3"
     output = tmp_path / "trial-output"
     allowlist = source / "packaging/release-source-allowlist.txt"
     source_version = source / _VERSION_PATH
@@ -1124,7 +1142,9 @@ def test_staging_delta_rejects_an_unapproved_generated_file() -> None:
     builder = _builder()
     base_version = b'__version__ = "0.1.0a1"\n'
     generated = {
-        str(_VERSION_PATH): b'__version__ = "0.1.0a1+trial.p.aaaaaaa.20260907.r1.a1"\n',
+        str(_VERSION_PATH): (
+            b'__version__ = "0.1.0a1+trial.p.gaaaaaaa.20260907.r1.a1"\n'
+        ),
         str(_TRIAL_BUILD_PATH): b'{"schema":1}\n',
         str(_CAPABILITY_PATH): b'{"entries":[],"schema_version":1}\n',
     }

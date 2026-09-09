@@ -317,7 +317,7 @@ def _bind_trial_artifact_to_checkout(
     )
     source_manifest.write_bytes(source.to_bytes())
     source_sha = _git(checkout, "rev-parse", "HEAD")
-    version = f"0.1.0a1+trial.p.{source_sha[:7]}.20260907.r1.a1"
+    version = f"0.1.0a1+trial.p.g{source_sha[:7]}.20260907.r1.a1"
     identity = {
         "build_id": f"P-{source_sha[:7]}-20260907-r1-a1",
         "source_manifest_sha256": manifest_digest(source),
@@ -481,10 +481,10 @@ def trial_artifact(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
         "build_id": "P-abcdef0-20260907-r1-a1",
         "source_manifest_sha256": source_manifest_sha256,
         "source_sha": "abcdef0123456789abcdef0123456789abcdef01",
-        "version": "0.1.0a1+trial.p.abcdef0.20260907.r1.a1",
+        "version": "0.1.0a1+trial.p.gabcdef0.20260907.r1.a1",
     }
     wheel = tmp_path / (
-        "gwexpy_studio-0.1.0a1+trial.p.abcdef0.20260907.r1.a1-py3-none-any.whl"
+        "gwexpy_studio-0.1.0a1+trial.p.gabcdef0.20260907.r1.a1-py3-none-any.whl"
     )
     _write_installable_trial_wheel(wheel, identity)
     entries = {
@@ -1583,7 +1583,7 @@ def test_resolution_rejects_build_id_and_version_with_different_ci_fields(
     wheel, trial_manifest, source_manifest, identity = trial_artifact
     inconsistent = {
         **identity,
-        "version": "0.1.0a1+trial.p.abcdef0.20260908.r1.a1",
+        "version": "0.1.0a1+trial.p.gabcdef0.20260908.r1.a1",
     }
     _write_installable_trial_wheel(wheel, inconsistent)
     document = json.loads(trial_manifest.read_text(encoding="utf-8"))
@@ -1812,7 +1812,7 @@ def test_resolution_runs_the_installed_gate_with_an_isolated_phase_two_python(
                     "build_id": "P-abcdef0-20260907-r1-a1",
                     "python_version": "3.12.12",
                     "source_sha": "abcdef0123456789abcdef0123456789abcdef01",
-                    "version": "0.1.0a1+trial.p.abcdef0.20260907.r1.a1",
+                    "version": "0.1.0a1+trial.p.gabcdef0.20260907.r1.a1",
                 },
             )
         )
