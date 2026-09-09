@@ -24,11 +24,15 @@ PythonやJupyterに慣れていない研究者と学生が、Gitを使わずに�
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
 pip install --only-binary=:all: \
   -c constraints-ubuntu24-x86_64.txt \
   ./gwexpy_studio-*.whl
 gwexpy-studio
 ```
+
+二つの環境設定により、別のPython環境やsource checkoutにあるpackageが試用版の処理へ混入することを防ぎます。
 
 ZIPにはwheel、architecture別のqualification記録、checksum、build identity、日英のQuick Start、`Feedback.ja.md`を収録します。
 

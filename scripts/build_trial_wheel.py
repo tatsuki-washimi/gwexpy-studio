@@ -78,7 +78,7 @@ _TRIAL_PROJECT_NAME = "gwexpy-studio"
 _TRIAL_PROJECT_REQUIRES_PYTHON = ">=3.12,<3.13"
 _TRIAL_PROJECT_DEPENDENCIES = (
     "PySide6-Essentials==6.11.2",
-    "gwexpy>=0.2.0,<0.3.0",
+    "gwexpy==0.2.0",
     "gwpy>=4.0.0,<5.0.0",
     "numpy>=2.0.0,<3.0.0",
     "scipy>=1.15.0,<2.0.0",

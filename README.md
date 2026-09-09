@@ -27,11 +27,16 @@ After entering the unpacked directory, the installation path is:
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
 pip install --only-binary=:all: \
   -c constraints-ubuntu24-x86_64.txt \
   ./gwexpy_studio-*.whl
 gwexpy-studio
 ```
+
+The two environment settings keep packages from another Python environment or
+source checkout out of the trial process.
 
 The ZIP contains the wheel, architecture qualification records, checksums,
 build identity, Quick Starts, and the Japanese feedback form.

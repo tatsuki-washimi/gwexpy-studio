@@ -19,7 +19,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 _M2_RUNTIME_REQUIREMENTS = (
     "PySide6-Essentials==6.11.2",
-    "gwexpy<0.3.0,>=0.2.0",
+    "gwexpy==0.2.0",
     "gwpy<5.0.0,>=4.0.0",
     "numpy<3.0.0,>=2.0.0",
     "scipy<2.0.0,>=1.15.0",

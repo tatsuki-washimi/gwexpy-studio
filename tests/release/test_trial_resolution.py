@@ -43,7 +43,7 @@ _ENTRY_POINTS = b"[gui_scripts]\ngwexpy-studio = gwexpy_studio.ui.app:main\n"
 _TOP_LEVEL = b"gwexpy_studio\n"
 _M2_RUNTIME_REQUIREMENTS = (
     "PySide6-Essentials==6.11.2",
-    "gwexpy<0.3.0,>=0.2.0",
+    "gwexpy==0.2.0",
     "gwpy<5.0.0,>=4.0.0",
     "numpy<3.0.0,>=2.0.0",
     "scipy<2.0.0,>=1.15.0",

@@ -50,10 +50,17 @@ Do not substitute the bundled aarch64 constraints in this initial trial.
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
 python --version
 conda --version
 pip --version
 ```
+
+Keep these two environment settings in the terminal used for the trial. They
+prevent packages from another Python 3.12 environment or source checkout from
+being imported. If you open another terminal, activate the conda environment
+and repeat the two environment-setting commands before starting Studio.
 
 ## Check the Qt GL runtime
 

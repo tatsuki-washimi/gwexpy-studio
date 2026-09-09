@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
+from gwexpy_studio.domain.project import Project
 from gwexpy_studio.ops.source import SourceInspection
 from gwexpy_studio.ui.app import create_app
 from gwexpy_studio.ui.bridge import BridgeState, WorkerBridge
@@ -55,6 +56,7 @@ class _BlockingLoadController:
 
     def __init__(self, entered: threading.Event, release: threading.Event) -> None:
         self.session = type("Session", (), {"client": None})()
+        self.project = Project()
         self._entered = entered
         self._release = release
         self.close_threads: list[QThread] = []
