@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import stat
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -63,6 +65,89 @@ def test_verifier_accepts_valid_archive_and_rejects_tampering(tmp_path: Path) ->
     archive.write_bytes(archive.read_bytes() + b"tampered")
     with pytest.raises(_module().TrialReleaseError, match="sidecar|digest"):
         _module().verify_trial_release(archive, sidecar)
+
+
+def test_packaging_rejects_invalid_bundle_and_nonfresh_output(tmp_path: Path) -> None:
+    module = _module()
+    invalid_bundle = tmp_path / "invalid-bundle"
+    invalid_bundle.mkdir()
+    (invalid_bundle / "unexpected.txt").write_text("bad")
+    with pytest.raises(module.TrialReleaseError, match="verification"):
+        module.package_trial_release(invalid_bundle, tmp_path / "release")
+
+    valid_root = tmp_path / "valid"
+    valid_root.mkdir()
+    bundle, _, _ = _archive(valid_root)
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "keep").write_text("do not overwrite")
+    with pytest.raises(module.TrialReleaseError, match="fresh"):
+        module.package_trial_release(bundle, existing)
+
+
+def test_package_and_verify_clis_succeed_and_fail(tmp_path: Path) -> None:
+    bundle_inputs = _write_trial_inputs(tmp_path)
+    bundle = tmp_path / "bundle"
+    _assemble(bundle_inputs, bundle)
+    release = tmp_path / "release"
+    python = sys.executable
+    package = subprocess.run(
+        [
+            python,
+            "scripts/package_trial_release.py",
+            "--bundle",
+            str(bundle),
+            "--output",
+            str(release),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert package.returncode == 0
+    verify = subprocess.run(
+        [
+            python,
+            "scripts/verify_trial_release.py",
+            "--release-directory",
+            str(release),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verify.returncode == 0
+    assert "P-abcdef0-20260907-r1-a1" in verify.stdout
+    failed_package = subprocess.run(
+        [
+            python,
+            "scripts/package_trial_release.py",
+            "--bundle",
+            str(tmp_path / "missing"),
+            "--output",
+            str(tmp_path / "bad"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert failed_package.returncode != 0
+    archive_name = next(
+        path.name for path in release.iterdir() if path.name.endswith(".zip")
+    )
+    (release / archive_name).unlink()
+    failed_verify = subprocess.run(
+        [
+            python,
+            "scripts/verify_trial_release.py",
+            "--release-directory",
+            str(release),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert failed_verify.returncode != 0
 
 
 def test_directory_verifier_requires_exact_archive_and_sidecar_pair(
@@ -133,7 +218,16 @@ def test_directory_verifier_rejects_missing_or_extra_internal_bundle_file(
 
 
 @pytest.mark.parametrize(
-    "name", ["absolute", "parent", "backslash", "duplicate", "symlink"]
+    "name",
+    [
+        "absolute",
+        "parent",
+        "backslash",
+        "duplicate",
+        "symlink",
+        "nonregular",
+        "wrong-mode",
+    ],
 )
 def test_verifier_rejects_unsafe_outer_members(tmp_path: Path, name: str) -> None:
     _, archive, sidecar = _archive(tmp_path)
@@ -149,11 +243,18 @@ def test_verifier_rejects_unsafe_outer_members(tmp_path: Path, name: str) -> Non
         entries.append((zipfile.ZipInfo(f"{root}\\escape"), b"x"))
     elif name == "duplicate":
         entries.append(entries[0])
-    else:
+    elif name == "symlink":
         info = zipfile.ZipInfo(f"{root}/link")
         info.create_system = 3
         info.external_attr = (stat.S_IFLNK | 0o777) << 16
         entries.append((info, b"x"))
+    else:
+        info, data = entries[0]
+        info = zipfile.ZipInfo(info.filename)
+        info.create_system = 3
+        mode = stat.S_IFCHR | 0o644 if name == "nonregular" else stat.S_IFREG | 0o600
+        info.external_attr = mode << 16
+        entries[0] = (info, data)
     with zipfile.ZipFile(output, "w") as contents:
         for info, data in entries:
             contents.writestr(info, data)
