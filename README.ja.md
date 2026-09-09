@@ -26,7 +26,7 @@ conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
 pip install --only-binary=:all: \
   -c constraints-ubuntu24-x86_64.txt \
-  ./gwexpy_studio-0.1.0a1+trial.<build-id>-py3-none-any.whl
+  ./gwexpy_studio-*.whl
 gwexpy-studio
 ```
 

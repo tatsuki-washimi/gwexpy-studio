@@ -308,6 +308,24 @@ def test_trial_documents_start_from_the_two_release_assets() -> None:
         assert "constraints-ubuntu24-aarch64.txt" not in document
 
 
+def test_readme_install_commands_use_the_verified_wheel_glob() -> None:
+    """Runnable participant commands must not contain a version placeholder."""
+    documents = (
+        (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"),
+        (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8"),
+    )
+
+    for document in documents:
+        bash_blocks = re.findall(r"```bash\n(.*?)\n```", document, flags=re.DOTALL)
+        install_blocks = [block for block in bash_blocks if "pip install" in block]
+        assert len(install_blocks) == 1
+        install = install_blocks[0]
+        assert "<build-id>" not in install
+        assert "--only-binary=:all:" in install
+        assert "constraints-ubuntu24-x86_64.txt" in install
+        assert "./gwexpy_studio-*.whl" in install
+
+
 def test_trial_readiness_defines_the_archive_and_manual_approval_contract() -> None:
     """Release governance and participant assets match the initial trial decision."""
     readiness = (
