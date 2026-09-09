@@ -546,11 +546,21 @@ jobs:
             --build-run-attempt "$GITHUB_RUN_ATTEMPT"
           python3.12 scripts/verify_trial_bundle.py --bundle "$RUNNER_TEMP/trial-bundle"
 
-      - name: Upload the complete trial bundle
+      - name: Package and verify the participant release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.12 scripts/package_trial_release.py \
+            --bundle "$RUNNER_TEMP/trial-bundle" \
+            --output "$RUNNER_TEMP/trial-release"
+          python3.12 scripts/verify_trial_release.py \
+            --release-directory "$RUNNER_TEMP/trial-release"
+
+      - name: Upload the participant release archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: trial-bundle-${{ github.run_id }}-a${{ github.run_attempt }}
-          path: ${{ runner.temp }}/trial-bundle/*
+          path: ${{ runner.temp }}/trial-release/*
           if-no-files-found: error
           retention-days: 30
           overwrite: false

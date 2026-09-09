@@ -153,6 +153,8 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
     quick_start.write_text("# Quick start\n", encoding="utf-8")
     quick_start_ja = tmp_path / "Quick-Start.ja.md"
     quick_start_ja.write_text("# クイックスタート\n", encoding="utf-8")
+    feedback = tmp_path / "Feedback.ja.md"
+    feedback.write_text("# フィードバック\n", encoding="utf-8")
     source_manifest = tmp_path / "SOURCE-MANIFEST.json"
     source = ReleaseSourceManifest(
         entries=tuple(
@@ -163,6 +165,7 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
                     _manifest_entry(
                         "docs/Quick-Start.ja.md", quick_start_ja.read_bytes()
                     ),
+                    _manifest_entry("docs/Feedback.ja.md", feedback.read_bytes()),
                     _manifest_entry(
                         "packaging/trial-io-capabilities.json", capability_policy
                     ),
@@ -239,6 +242,7 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
         "trial_manifest": preliminary_trial_manifest,
         "quick_start": quick_start,
         "quick_start_ja": quick_start_ja,
+        "feedback": feedback,
     }
     for architecture in ("x86_64", "aarch64"):
         constraints = tmp_path / f"constraints-ubuntu24-{architecture}.txt"
@@ -347,6 +351,7 @@ def _assemble(inputs: dict[str, Path], output: Path) -> None:
         resolution_aarch64=inputs["resolution_aarch64"],
         quick_start=inputs["quick_start"],
         quick_start_ja=inputs["quick_start_ja"],
+        feedback_ja=inputs["feedback"],
         repository="example/gwexpy-studio",
         build_workflow_path=".github/workflows/build-trial-wheel.yml",
         build_run_id=123456,
@@ -502,6 +507,7 @@ def test_assemble_and_verify_trial_bundle_round_trip(tmp_path: Path) -> None:
         "SHA256SUMS",
         "Quick-Start.md",
         "Quick-Start.ja.md",
+        "Feedback.ja.md",
     }
     assert {path.name for path in output.iterdir()} == expected
 
@@ -570,11 +576,11 @@ def test_assemble_never_replaces_a_preexisting_bundle(tmp_path: Path) -> None:
     with pytest.raises(_bundle().TrialBundleError, match="output already exists"):
         _assemble(inputs, output)
 
-    assert _verifier().verify_trial_bundle(output)["schema"] == 2
+    assert _verifier().verify_trial_bundle(output)["schema"] == 3
 
 
-def test_trial_quick_starts_describe_the_wheel_only_install_path() -> None:
-    """The published instructions require conda and pip, never a Git checkout."""
+def test_trial_quick_starts_describe_the_initial_x86_release_path() -> None:
+    """The instructions start at the two release assets and stay on Ubuntu x86."""
     english = (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(encoding="utf-8")
     japanese = (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(
         encoding="utf-8"
@@ -590,7 +596,9 @@ def test_trial_quick_starts_describe_the_wheel_only_install_path() -> None:
         assert "sha256sum -c SHA256SUMS" in document
         assert "--only-binary=:all:" in document
         assert "constraints-ubuntu24-x86_64.txt" in document
-        assert "constraints-ubuntu24-aarch64.txt" in document
+        assert "constraints-ubuntu24-aarch64.txt" not in document
+        assert ".zip.sha256" in document
+        assert "WSL2" not in document
         assert "gwexpy-studio" in document
         assert "git clone" not in document
         assert "pip install -e" not in document

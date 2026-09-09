@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, cast
 
 sys.dont_write_bytecode = True
 
@@ -95,6 +96,7 @@ _ASSET_NAMES = frozenset(
         "constraints-ubuntu24-aarch64.txt",
         "constraints-ubuntu24-x86_64.txt",
         "Quick-Start.ja.md",
+        "Feedback.ja.md",
         "Quick-Start.md",
         "SHA256SUMS",
         "SOURCE-MANIFEST.json",
@@ -140,6 +142,7 @@ _PRELIMINARY_FIELDS = {
 _FINAL_FIELDS = {
     "architectures",
     "build",
+    "feedback",
     "preliminary_trial_manifest_sha256",
     "quick_start",
     "schema",
@@ -183,6 +186,7 @@ def assemble_trial_bundle(
     resolution_aarch64: Path,
     quick_start: Path,
     quick_start_ja: Path,
+    feedback_ja: Path | None = None,
     repository: str,
     build_workflow_path: str,
     build_run_id: int,
@@ -206,10 +210,16 @@ def assemble_trial_bundle(
     )
     quick_start_bytes = _read_regular_bytes(quick_start, "English Quick Start")
     quick_start_ja_bytes = _read_regular_bytes(quick_start_ja, "Japanese Quick Start")
+    if feedback_ja is None:
+        feedback_ja = Path(__file__).resolve().parents[1] / "docs" / "Feedback.ja.md"
+    feedback_bytes = _read_regular_bytes(feedback_ja, "Japanese feedback form")
     _verify_quick_start_source(
         inputs.source_manifest,
         "docs/Quick-Start.md",
         quick_start_bytes,
+    )
+    _verify_quick_start_source(
+        inputs.source_manifest, "docs/Feedback.ja.md", feedback_bytes
     )
     _verify_quick_start_source(
         inputs.source_manifest,
@@ -251,7 +261,12 @@ def assemble_trial_bundle(
                 "source_path": "docs/Quick-Start.ja.md",
             },
         },
-        "schema": 2,
+        "feedback": {
+            "filename": "Feedback.ja.md",
+            "sha256": _sha256(feedback_bytes),
+            "source_path": "docs/Feedback.ja.md",
+        },
+        "schema": 3,
         "source": {
             "manifest_filename": "SOURCE-MANIFEST.json",
             "manifest_sha256": inputs.source_manifest_sha256,
@@ -283,6 +298,7 @@ def assemble_trial_bundle(
         "TRIAL-MANIFEST.json": _canonical_json(final_manifest),
         "Quick-Start.md": quick_start_bytes,
         "Quick-Start.ja.md": quick_start_ja_bytes,
+        "Feedback.ja.md": feedback_bytes,
     }
     files["SHA256SUMS"] = _checksums(files)
     verify_trial_bundle_bytes(files)
@@ -297,7 +313,7 @@ def verify_trial_bundle_bytes(files: Mapping[str, bytes]) -> dict[str, object]:
     if (
         not isinstance(trial, dict)
         or set(trial) != _FINAL_FIELDS
-        or trial["schema"] != 2
+        or trial["schema"] != 3
     ):
         raise TrialBundleError("final trial manifest schema is invalid")
     build = _mapping(trial["build"], "final build")
@@ -403,6 +419,7 @@ def verify_trial_bundle_bytes(files: Mapping[str, bytes]) -> dict[str, object]:
             wheel_sha256=wheel_sha256,
         )
     _verify_quick_start_records(trial["quick_start"], source_manifest, material)
+    _verify_feedback_record(trial["feedback"], source_manifest, material)
     expected_checksums = _checksums(
         {name: content for name, content in material.items() if name != "SHA256SUMS"}
     )
@@ -882,6 +899,26 @@ def _verify_quick_start_source(
         raise TrialBundleError("Quick Start bytes do not come from canonical source")
 
 
+def _verify_feedback_record(
+    value: object,
+    source_manifest: ReleaseSourceManifest,
+    files: Mapping[str, bytes],
+) -> None:
+    record = _mapping(value, "feedback record")
+    _require_keys(record, {"filename", "sha256", "source_path"}, "feedback record")
+    if (
+        record.get("filename") != "Feedback.ja.md"
+        or record.get("source_path") != "docs/Feedback.ja.md"
+    ):
+        raise TrialBundleError("feedback record has an unexpected path")
+    content = files.get("Feedback.ja.md")
+    if content is None or not content:
+        raise TrialBundleError("feedback asset is missing or empty")
+    if _required_sha(record["sha256"], "feedback") != _sha256(content):
+        raise TrialBundleError("feedback digest is invalid")
+    _verify_quick_start_source(source_manifest, "docs/Feedback.ja.md", content)
+
+
 def _generated_wheel_files(
     wheel_bytes: bytes, *, generated_records: object
 ) -> dict[str, bytes]:
@@ -1117,7 +1154,7 @@ def _manifest_from_bytes(content: bytes) -> ReleaseSourceManifest:
         entries.append(
             ManifestEntry(
                 path=path,
-                file_type=file_type,
+                file_type=cast(Literal["file", "directory"], file_type),
                 mode=mode,
                 sha256=digest,
                 symlink_target="",
@@ -1371,6 +1408,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--resolution-aarch64", required=True, type=Path)
     parser.add_argument("--quick-start", required=True, type=Path)
     parser.add_argument("--quick-start-ja", required=True, type=Path)
+    parser.add_argument("--feedback-ja", type=Path)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--build-workflow-path", required=True)
     parser.add_argument("--build-run-id", required=True, type=int)
@@ -1395,6 +1433,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             resolution_aarch64=arguments.resolution_aarch64,
             quick_start=arguments.quick_start,
             quick_start_ja=arguments.quick_start_ja,
+            feedback_ja=arguments.feedback_ja,
             repository=arguments.repository,
             build_workflow_path=arguments.build_workflow_path,
             build_run_id=arguments.build_run_id,

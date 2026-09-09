@@ -29,6 +29,9 @@ include docs/design/**
 include docs/development.md
 include docs/Quick-Start.md
 include docs/Quick-Start.ja.md
+include docs/Feedback.ja.md
+include scripts/package_trial_release.py
+include scripts/verify_trial_release.py
 include docs/release/**
 exclude docs/release/artifact-inventory.md
 exclude docs/release/build-provenance.md

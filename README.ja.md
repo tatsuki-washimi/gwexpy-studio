@@ -6,30 +6,33 @@ GWexpy Studioは、科学データを確認し、GWexpyで解析し、projectを
 
 PythonやJupyterに慣れていない研究者と学生が、Gitを使わずに解析へ入れることを対象にします。
 
-## 試用版の状態
+## 試用版の配布
 
-最初のinstallable trial wheelを準備中です。
+試用者には、公開担当者が明示した一つのGitHub prereleaseリンクを共有します。
 
-現在はpublic trial wheelもPyPI releaseもないため、このrepositoryは利用者向けの導入経路ではありません。
+同じbasenameを持つ次の2ファイルをダウンロードしてください。
 
-最初の対象は、conda Python 3.12を使うUbuntu 24.04です。
+- `gwexpy-studio-trial-<build-id>.zip`
+- `gwexpy-studio-trial-<build-id>.zip.sha256`
 
-試用者向けの導入経路は、次の形にします。
+外側のchecksumを確認し、ZIPを展開して、同梱したQuick Startに従います。
+
+初回の試験対象は、conda Python 3.12を使うUbuntu 24.04 x86_64です。
+
+展開先のディレクトリへ移動した後の導入経路は次のとおりです。
 
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
 pip install --only-binary=:all: \
   -c constraints-ubuntu24-x86_64.txt \
-  ./gwexpy_studio-0.1.0a1+trial.<build-id>-py3-none-any.whl
+  ./gwexpy_studio-*.whl
 gwexpy-studio
 ```
 
-wheel、architecture別constraints、checksum、build identity、Quick Startは、一つのGitHub prereleaseに添付します。
+ZIPにはwheel、architecture別のqualification記録、checksum、build identity、日英のQuick Start、`Feedback.ja.md`を収録します。
 
-ARM64では対応する`constraints-ubuntu24-aarch64.txt`をQuick Startに従って使います。
-
-この経路にGit、source checkout、editable installは含めません。
+試用者向けの経路にGit、source checkout、editable install、PyPIは含めません。
 
 ## 最初の5分
 

@@ -1,37 +1,62 @@
 # GWexpy Studio 試用版クイックスタート
 
-この試用版は Ubuntu 24.04 Linux 用です。
+初回の試験対象はUbuntu 24.04 x86_64だけです。
 
-WSL2 上の Ubuntu 24.04 でも同じ手順を使います。
+開始前にMiniforgeなどのconda環境を導入してください。
 
-開始前に Miniforge などの conda 環境を導入してください。
+Git、editable install、source checkoutは必要ありません。
 
-試用版 bundle を展開し、そのディレクトリで端末を開きます。
+## Releaseのダウンロードと確認
 
-bundle には wheel と対応する dependency constraints が入っています。
+試験担当者から共有されたGitHub prereleaseリンクを開きます。
 
-## ダウンロードの確認
+空のディレクトリへ、ZIPとchecksum sidecarの2ファイルだけをダウンロードしてください。
 
-install の前に次を実行します。
+どちらのファイル名も`gwexpy-studio-trial-`で始まり、sidecarは`.zip.sha256`で終わります。
+
+ダウンロード先のディレクトリで次を実行します。
 
 ```bash
+set -euo pipefail
+shopt -s nullglob
+sidecars=(gwexpy-studio-trial-*.zip.sha256)
+test "${#sidecars[@]}" -eq 1
+sha256sum -c "${sidecars[0]}"
+archive="${sidecars[0]%.sha256}"
+unzip "$archive"
+bundle="${archive%.zip}"
+cd "$bundle"
 sha256sum -c SHA256SUMS
 ```
 
-すべての行が `OK` になることを確認してください。
+外側のchecksumと、内部の全checksumが`OK`になることを確認してください。
 
-一つでも失敗した場合は install しないでください。
+どちらかが失敗した場合はinstallせずに終了します。
 
-## conda 環境の作成
+## 試験端末の確認
+
+```bash
+test "$(uname -m)" = "x86_64"
+grep '^VERSION_ID="24.04"$' /etc/os-release
+```
+
+どちらかが失敗した場合は、出力を保存して終了してください。
+
+初回試験では、同梱されたaarch64用constraintsへ切り替えません。
+
+## conda環境の作成
 
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
+python --version
+conda --version
+pip --version
 ```
 
 ## Qt GL runtimeの確認
 
-wheelをinstallする前に、Ubuntu hostがQt GL runtimeの二つのlibraryをloadできることを確認します。
+wheelをinstallする前に、UbuntuがQt GL runtimeの二つのlibraryをloadできることを確認します。
 
 ```bash
 python - <<'PY'
@@ -51,50 +76,51 @@ sudo apt-get update
 sudo apt-get install --no-install-recommends -y libegl1 libgl1
 ```
 
-WSL2では、Windows PowerShellではなくUbuntu 24.04 distribution内のterminalで実行してください。
+`sudo`を使えない場合は、Ubuntuの管理者に`libegl1`と`libgl1`のinstallを依頼してください。
 
-`sudo`を使えない場合は、UbuntuまたはWSLの管理者に`libegl1`と`libgl1`のinstallを依頼してください。
+preflightが`OK`になるまで次へ進みません。
 
-preflightが`OK`になるまで次へ進まないでください。
-
-## 試用版 wheel の install
-
-Linux architecture を確認します。
-
-```bash
-uname -m
-```
-
-表示が `x86_64` の場合は次を実行します。
+## 試用版wheelのinstall
 
 ```bash
 pip install --only-binary=:all: -c constraints-ubuntu24-x86_64.txt ./gwexpy_studio-*.whl
 ```
 
-表示が `aarch64` の場合は次を実行します。
+`--only-binary=:all:`により、試験端末でpipがnative dependencyをbuildすることを防ぎます。
 
-```bash
-pip install --only-binary=:all: -c constraints-ubuntu24-aarch64.txt ./gwexpy_studio-*.whl
-```
+installが止まった場合は、端末出力を保存して試験を終了してください。
 
-`--only-binary=:all:` により、試用端末で pip が native dependency を build することを防ぎます。
+別のconstraintsへ変更したり、source buildを試したりしません。
 
-## Studio の起動
+## Studioの起動と操作
 
 ```bash
 gwexpy-studio
 ```
 
-Welcome 画面で **Try Sample** を選びます。
+次の手順を実行してください。
 
-sample を Crop し、ASD を計算して project を保存してください。
+1. **Try Sample**を選ぶ。
+2. sampleをCropする。
+3. ASDを計算する。
+4. projectを保存し、Studioを終了する。
+5. Studioを再起動し、保存したprojectを開く。
 
-Studio を閉じてから再度 `gwexpy-studio` を実行し、保存した project を開きます。
+Aboutダイアログを開き、Build IDが次のcommandの出力と一致することを確認します。
 
-この試用では Git、editable install、source checkout は必要ありません。
+```bash
+python - <<'PY'
+import json
 
-## install が止まった場合
+with open("TRIAL-MANIFEST.json", encoding="utf-8") as stream:
+    print(json.load(stream)["build"]["id"])
+PY
+```
 
-端末出力、trial bundle、About ダイアログに表示される Build ID を残してください。
+## フィードバックの送付
 
-別の constraints file に置き換えたり、`--only-binary=:all:` なしで install をやり直したりしないでください。
+結果を`Feedback.ja.md`へ記入し、prereleaseリンクが届いたメールまたはチャットへ返信してください。
+
+機密の測定データ、認証情報、無関係なログは送らないでください。
+
+installまたは起動で停止した場合は、その時点の端末出力と、表示できた場合はBuild IDを保存して終了します。

@@ -8,33 +8,36 @@ analysis, saving a project, and exporting ordinary Python.
 It is intended for researchers and students who use Python tools but do not
 need to learn Git or begin by writing a notebook.
 
-## Trial status
+## Trial distribution
 
-The first installable trial wheel is being prepared.
+Invited participants receive one explicitly shared GitHub prerelease link.
 
-There is no public trial wheel or PyPI release yet, so this repository is not
-an end-user installation path.
+Download the two release assets with the same base name:
 
-The planned first trial target is Ubuntu 24.04 with a conda Python 3.12
-environment.
+- `gwexpy-studio-trial-<build-id>.zip`
+- `gwexpy-studio-trial-<build-id>.zip.sha256`
 
-Its user path will be:
+Verify the outer checksum, unpack the ZIP, and follow the bundled Quick Start.
+
+The initial participant trial supports Ubuntu 24.04 x86_64 with a conda Python
+3.12 environment.
+
+After entering the unpacked directory, the installation path is:
 
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
 pip install --only-binary=:all: \
   -c constraints-ubuntu24-x86_64.txt \
-  ./gwexpy_studio-0.1.0a1+trial.<build-id>-py3-none-any.whl
+  ./gwexpy_studio-*.whl
 gwexpy-studio
 ```
 
-The trial wheel, architecture-specific constraints, checksums, build identity,
-and Quick Start will be attached to one GitHub prerelease.
+The ZIP contains the wheel, architecture qualification records, checksums,
+build identity, Quick Starts, and the Japanese feedback form.
 
-The ARM64 Quick Start uses the matching `constraints-ubuntu24-aarch64.txt`.
-
-Git, a source checkout, and an editable install are not part of that path.
+Git, a source checkout, an editable install, and PyPI are not part of the
+participant path.
 
 ## First five minutes
 
