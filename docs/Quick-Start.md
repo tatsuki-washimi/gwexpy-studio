@@ -1,36 +1,63 @@
 # GWexpy Studio trial quick start
 
-This trial is for Ubuntu 24.04 Linux, including Ubuntu 24.04 running in WSL2.
+This initial participant trial supports Ubuntu 24.04 x86_64 only.
 
 Install Miniforge or another conda distribution before starting.
 
-Download and unpack the trial bundle, then open a terminal in that directory.
+Git, an editable install, and a source checkout are not required.
 
-The bundle already contains the wheel and the matching dependency constraints.
+## Download and verify the release
 
-## Verify the download
+Open the GitHub prerelease link shared by the trial coordinator.
 
-Run this command before installing.
+In an empty directory, download exactly the ZIP and its checksum sidecar.
+
+Both filenames start with `gwexpy-studio-trial-` and the sidecar ends in
+`.zip.sha256`.
+
+Run the following commands from that download directory.
 
 ```bash
+shopt -s nullglob
+sidecars=(gwexpy-studio-trial-*.zip.sha256)
+test "${#sidecars[@]}" -eq 1
+sha256sum -c "${sidecars[0]}"
+archive="${sidecars[0]%.sha256}"
+unzip "$archive"
+bundle="${archive%.zip}"
+cd "$bundle"
 sha256sum -c SHA256SUMS
 ```
 
-Every listed file must report `OK`.
+The outer checksum and every internal checksum must report `OK`.
 
-Do not install if a checksum fails.
+Stop without installing if either check fails.
+
+## Confirm the trial machine
+
+```bash
+test "$(uname -m)" = "x86_64"
+grep '^VERSION_ID="24.04"$' /etc/os-release
+```
+
+Stop and report the output if either command fails.
+
+Do not substitute the bundled aarch64 constraints in this initial trial.
 
 ## Create the environment
 
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
+python --version
+conda --version
+pip --version
 ```
 
 ## Check the Qt GL runtime
 
-Before installing the wheel, check that the Ubuntu host can load the two Qt GL
-runtime libraries.
+Before installing the wheel, check that Ubuntu can load both Qt GL runtime
+libraries.
 
 ```bash
 python - <<'PY'
@@ -43,56 +70,62 @@ print("Qt GL runtime: OK")
 PY
 ```
 
-If this command fails, run the following commands and then repeat the
-preflight.
+If this command fails, run the following commands and repeat the preflight.
 
 ```bash
 sudo apt-get update
 sudo apt-get install --no-install-recommends -y libegl1 libgl1
 ```
 
-Under WSL2, run these commands inside the Ubuntu 24.04 distribution, not in
-Windows PowerShell.
+If `sudo` is unavailable, ask the Ubuntu administrator to install `libegl1`
+and `libgl1`.
 
-If `sudo` is unavailable, ask the Ubuntu or WSL administrator to install
-`libegl1` and `libgl1`; do not continue until the preflight reports `OK`.
+Do not continue until the preflight reports `OK`.
 
 ## Install the trial wheel
-
-Check the Linux architecture.
-
-```bash
-uname -m
-```
-
-For `x86_64`, run:
 
 ```bash
 pip install --only-binary=:all: -c constraints-ubuntu24-x86_64.txt ./gwexpy_studio-*.whl
 ```
 
-For `aarch64`, run:
+`--only-binary=:all:` prevents pip from building native dependencies on the
+trial machine.
 
-```bash
-pip install --only-binary=:all: -c constraints-ubuntu24-aarch64.txt ./gwexpy_studio-*.whl
-```
+If installation stops, save the terminal output and stop the trial.
 
-`--only-binary=:all:` prevents pip from building native dependencies on the trial machine.
+Do not change constraints or attempt a source build.
 
-## Start Studio
+## Start and exercise Studio
 
 ```bash
 gwexpy-studio
 ```
 
-Choose **Try Sample**, crop the sample, calculate ASD, and save a project.
+Complete these steps:
 
-Close Studio, start it again with `gwexpy-studio`, and reopen the saved project.
+1. Choose **Try Sample**.
+2. Crop the sample.
+3. Calculate ASD.
+4. Save the project and close Studio.
+5. Start Studio again and reopen the saved project.
 
-Git, an editable install, and a source checkout are not required for this trial.
+Open the About dialog and compare its Build ID with this command:
 
-## If installation stops
+```bash
+python - <<'PY'
+import json
 
-Keep the terminal output, the trial bundle, and the Build ID shown in Studio's About dialog.
+with open("TRIAL-MANIFEST.json", encoding="utf-8") as stream:
+    print(json.load(stream)["build"]["id"])
+PY
+```
 
-Do not substitute a different constraints file or rerun the install without `--only-binary=:all:`.
+## Send feedback
+
+Record the result in `Feedback.ja.md` and reply to the email or chat that
+contained the prerelease link.
+
+Do not send confidential measurement data, credentials, or unrelated logs.
+
+If installation or startup stops, keep the terminal output and the Build ID
+if it was visible, then end the trial at that point.

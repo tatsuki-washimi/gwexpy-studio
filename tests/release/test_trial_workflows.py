@@ -52,6 +52,11 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "scripts/capture_trial_resolution.py" in workflow
     assert "scripts/assemble_trial_bundle.py" in workflow
     assert "scripts/verify_trial_bundle.py" in workflow
+    assert "scripts/package_trial_release.py" in workflow
+    assert "scripts/verify_trial_release.py" in workflow
+    assert '--bundle "$RUNNER_TEMP/trial-bundle"' in workflow
+    assert '--output "$RUNNER_TEMP/trial-release"' in workflow
+    assert '--release-directory "$RUNNER_TEMP/trial-release"' in workflow
     assert workflow.count("- name: Install Qt GL runtime") == 2
     assert (
         workflow.count("sudo apt-get install --no-install-recommends -y libegl1 libgl1")
@@ -69,6 +74,10 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "needs: [qualify-x86_64, qualify-aarch64]" in workflow
     assert workflow.count("load_trial_artifact") >= 3
     assert workflow.count("git rev-parse --verify HEAD") >= 4
+    upload_start = workflow.index("- name: Upload the participant release archive")
+    upload_block = workflow[upload_start:]
+    assert "path: ${{ runner.temp }}/trial-release/*" in upload_block
+    assert "${{ runner.temp }}/trial-bundle/*" not in upload_block
 
 
 def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> None:
@@ -107,7 +116,14 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> N
     assert workflow.count("scripts/extract_trial_artifact.py") == 2
     assert workflow.count('--expected-digest "$ARTIFACT_DIGEST"') == 2
     assert "git/matching-refs/tags/" in workflow
-    assert "verify_trial_bundle.py" in workflow
+    assert "verify_trial_bundle.py" not in workflow
+    assert workflow.count("scripts/verify_trial_release.py") == 2
+    assert workflow.count(
+        '--release-directory "$RUNNER_TEMP/trial-release"'
+    ) == 2
+    assert workflow.count(
+        "from scripts.package_trial_release import verify_trial_release_directory"
+    ) == 2
     assert "trial-0.1.0a1-p." in workflow
     assert "v0.1.0a1" in workflow
     assert "gh release create" in workflow
@@ -120,6 +136,32 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> N
         '"repos/$REPOSITORY/git/refs"'
     )
     assert "target-commitish" not in workflow
+
+
+def test_publish_trial_workflow_releases_and_rechecks_exactly_two_outer_assets() -> (
+    None
+):
+    """Only the verified participant ZIP and its sidecar cross the release boundary."""
+    workflow = _workflow("publish-trial.yml")
+
+    release_start = workflow.index('gh release create "$TAG"')
+    release_end = workflow.index("\n\n      - name:", release_start)
+    release_block = workflow[release_start:release_end]
+    post_publish_start = workflow.index(
+        "- name: Verify the release still names the tag at P"
+    )
+    post_publish_block = workflow[post_publish_start:]
+
+    assert 'output.write(f"archive_filename={archive.name}\\n")' in workflow
+    assert 'output.write(f"sidecar_filename={sidecar.name}\\n")' in workflow
+    assert '"$RELEASE_DIRECTORY/$ARCHIVE_FILENAME"' in release_block
+    assert '"$RELEASE_DIRECTORY/$SIDECAR_FILENAME"' in release_block
+    assert "constraints-ubuntu24-x86_64.txt" not in release_block
+    assert "TRIAL-MANIFEST.json" not in release_block
+    assert 'rest_release.get("assets")' in post_publish_block
+    assert "expected_assets = {" in post_publish_block
+    assert 'f"gwexpy-studio-trial-{sys.argv[6]}.zip"' in post_publish_block
+    assert 'f"gwexpy-studio-trial-{sys.argv[6]}.zip.sha256"' in post_publish_block
 
 
 def test_publish_trial_workflow_keeps_trial_prereleases_non_latest() -> None:
@@ -173,3 +215,52 @@ def test_public_ci_installs_the_qt_gl_runtime_libraries() -> None:
     assert workflow.index("Install Qt GL runtime") < workflow.index(
         "Create a Python environment"
     )
+
+
+def test_trial_documents_start_from_the_two_release_assets() -> None:
+    """Participant documentation begins at the shared prerelease, not source."""
+    english_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    japanese_readme = (REPOSITORY_ROOT / "README.ja.md").read_text(
+        encoding="utf-8"
+    )
+    english_quick_start = (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(
+        encoding="utf-8"
+    )
+    japanese_quick_start = (
+        REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md"
+    ).read_text(encoding="utf-8")
+
+    assert "being prepared" not in english_readme
+    assert "There is no public trial wheel" not in english_readme
+    assert "準備中" not in japanese_readme
+    assert "public trial wheelもPyPI releaseもない" not in japanese_readme
+    for document in (english_readme, japanese_readme):
+        assert ".zip.sha256" in document
+        assert "GitHub prerelease" in document
+    for document in (english_quick_start, japanese_quick_start):
+        outer = document.index('sha256sum -c "${sidecars[0]}"')
+        unpack = document.index('unzip "$archive"')
+        enter = document.index('cd "$bundle"')
+        inner = document.index("sha256sum -c SHA256SUMS")
+        assert outer < unpack < enter < inner
+        assert "Ubuntu 24.04" in document
+        assert "x86_64" in document
+        assert "WSL2" not in document
+        assert "constraints-ubuntu24-aarch64.txt" not in document
+
+
+def test_trial_readiness_defines_the_archive_and_manual_approval_contract() -> None:
+    """Release governance and participant assets match the initial trial decision."""
+    readiness = (
+        REPOSITORY_ROOT / "docs" / "release" / "0.1.0a1-trial-readiness.md"
+    ).read_text(encoding="utf-8")
+
+    assert "gwexpy-studio-trial-<build-id>.zip" in readiness
+    assert "gwexpy-studio-trial-<build-id>.zip.sha256" in readiness
+    assert "Feedback.ja.md" in readiness
+    assert "schema 3" in readiness
+    assert "no required reviewers" in readiness
+    assert "default-branch deployment policy" in readiness
+    assert "manual workflow dispatch" in readiness
+    assert "Require at least one reviewer" not in readiness
+    assert "prevention of self-review" not in readiness

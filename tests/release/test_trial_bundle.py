@@ -579,8 +579,8 @@ def test_assemble_never_replaces_a_preexisting_bundle(tmp_path: Path) -> None:
     assert _verifier().verify_trial_bundle(output)["schema"] == 3
 
 
-def test_trial_quick_starts_describe_the_wheel_only_install_path() -> None:
-    """The published instructions require conda and pip, never a Git checkout."""
+def test_trial_quick_starts_describe_the_initial_x86_release_path() -> None:
+    """The instructions start at the two release assets and stay on Ubuntu x86."""
     english = (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(encoding="utf-8")
     japanese = (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(
         encoding="utf-8"
@@ -596,7 +596,9 @@ def test_trial_quick_starts_describe_the_wheel_only_install_path() -> None:
         assert "sha256sum -c SHA256SUMS" in document
         assert "--only-binary=:all:" in document
         assert "constraints-ubuntu24-x86_64.txt" in document
-        assert "constraints-ubuntu24-aarch64.txt" in document
+        assert "constraints-ubuntu24-aarch64.txt" not in document
+        assert ".zip.sha256" in document
+        assert "WSL2" not in document
         assert "gwexpy-studio" in document
         assert "git clone" not in document
         assert "pip install -e" not in document

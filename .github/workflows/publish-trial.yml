@@ -213,7 +213,7 @@ jobs:
               raise SystemExit("trial release already exists")
           PY
 
-      - name: Download, digest-bind, and extract the selected trial bundle
+      - name: Download, digest-bind, and extract the selected artifact wrapper
         shell: bash
         env:
           ARTIFACT_DIGEST: ${{ steps.selected.outputs.artifact_digest }}
@@ -224,13 +224,13 @@ jobs:
           set -euo pipefail
           gh api --method GET -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
-            > "$RUNNER_TEMP/trial-bundle.zip"
+            > "$RUNNER_TEMP/trial-release-artifact.zip"
           python3.12 scripts/extract_trial_artifact.py \
-            --archive "$RUNNER_TEMP/trial-bundle.zip" \
-            --output "$RUNNER_TEMP/trial-bundle" \
+            --archive "$RUNNER_TEMP/trial-release-artifact.zip" \
+            --output "$RUNNER_TEMP/trial-release" \
             --expected-digest "$ARTIFACT_DIGEST"
 
-      - name: Verify the downloaded bundle against the selected build
+      - name: Verify the release archive against the selected build
         shell: bash
         env:
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
@@ -239,22 +239,24 @@ jobs:
           TAG: ${{ steps.selected.outputs.tag }}
         run: |
           set -euo pipefail
-          python3.12 scripts/verify_trial_bundle.py --bundle "$RUNNER_TEMP/trial-bundle"
-          python3 - "$RUNNER_TEMP/trial-bundle/TRIAL-MANIFEST.json" <<'PY'
-          import json
+          python3.12 scripts/verify_trial_release.py \
+            --release-directory "$RUNNER_TEMP/trial-release"
+          python3.12 - "$RUNNER_TEMP/trial-release" <<'PY'
           import os
           from pathlib import Path
           import sys
 
-          trial = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          from scripts.package_trial_release import verify_trial_release_directory
+
+          trial = verify_trial_release_directory(Path(sys.argv[1]))
           build = trial.get("build")
           if not isinstance(build, dict):
-              raise SystemExit("verified bundle build record is missing")
+              raise SystemExit("verified release build record is missing")
           workflow = build.get("workflow")
           if not isinstance(workflow, dict):
-              raise SystemExit("verified bundle workflow record is missing")
+              raise SystemExit("verified release workflow record is missing")
           if build.get("source_sha") != os.environ["SOURCE_SHA"]:
-              raise SystemExit("verified bundle P does not match selected build")
+              raise SystemExit("verified release P does not match selected build")
           if workflow != {
               "repository": os.environ["REPOSITORY"],
               "run_attempt": int(os.environ["TAG"].rsplit("-a", 1)[1]),
@@ -262,11 +264,11 @@ jobs:
               "run_number": int(os.environ["TAG"].rsplit("-r", 1)[1].split("-a", 1)[0]),
               "workflow_path": ".github/workflows/build-trial-wheel.yml",
           }:
-              raise SystemExit("verified bundle workflow identity does not match selected build")
+              raise SystemExit("verified release workflow identity does not match selected build")
           PY
 
   publish:
-    name: Create the approved immutable prerelease
+    name: Create the authorized immutable prerelease
     needs: preflight
     environment: trial-publish
     runs-on: ubuntu-24.04
@@ -275,14 +277,14 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: Check out the trusted P controls after approval
+      - name: Check out the trusted P controls in the publish job
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Recheck trusted publish controls after approval
+      - name: Recheck trusted publish controls in the publish job
         shell: bash
         env:
           CONTROL_SHA: ${{ github.sha }}
@@ -291,7 +293,7 @@ jobs:
           test "$(git rev-parse --verify HEAD)" = "$CONTROL_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
-      - name: Fetch the selected build evidence again after approval
+      - name: Fetch the selected build evidence again in the publish job
         shell: bash
         env:
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
@@ -309,7 +311,7 @@ jobs:
             "repos/$REPOSITORY/git/ref/heads/${{ github.event.repository.default_branch }}" \
             > "$RUNNER_TEMP/default-head.json"
 
-      - name: Reverify selected build and default head after approval
+      - name: Reverify selected build and default head in the publish job
         id: selected
         shell: bash
         env:
@@ -419,7 +421,7 @@ jobs:
               output.write(f"tag={tag}\n")
           PY
 
-      - name: Recheck that the tag and release are absent after approval
+      - name: Recheck that the tag and release are absent before publication
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -450,7 +452,7 @@ jobs:
               raise SystemExit("trial release already exists")
           PY
 
-      - name: Download, digest-bind, and extract the selected bundle after approval
+      - name: Download, digest-bind, and extract the artifact wrapper again
         shell: bash
         env:
           ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
@@ -461,14 +463,14 @@ jobs:
           set -euo pipefail
           gh api --method GET -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
-            > "$RUNNER_TEMP/trial-bundle.zip"
+            > "$RUNNER_TEMP/trial-release-artifact.zip"
           python3.12 scripts/extract_trial_artifact.py \
-            --archive "$RUNNER_TEMP/trial-bundle.zip" \
-            --output "$RUNNER_TEMP/trial-bundle" \
+            --archive "$RUNNER_TEMP/trial-release-artifact.zip" \
+            --output "$RUNNER_TEMP/trial-release" \
             --expected-digest "$ARTIFACT_DIGEST"
 
-      - name: Verify the bundle again after approval
-        id: bundle
+      - name: Verify the release archive again before publication
+        id: release
         shell: bash
         env:
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
@@ -477,23 +479,26 @@ jobs:
           TAG: ${{ steps.selected.outputs.tag }}
         run: |
           set -euo pipefail
-          python3.12 scripts/verify_trial_bundle.py --bundle "$RUNNER_TEMP/trial-bundle"
-          python3 - "$RUNNER_TEMP/trial-bundle/TRIAL-MANIFEST.json" "$GITHUB_OUTPUT" <<'PY'
-          import json
+          python3.12 scripts/verify_trial_release.py \
+            --release-directory "$RUNNER_TEMP/trial-release"
+          python3.12 - "$RUNNER_TEMP/trial-release" "$GITHUB_OUTPUT" <<'PY'
           import os
           from pathlib import Path
           import sys
 
-          trial = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          from scripts.package_trial_release import verify_trial_release_directory
+
+          release_directory = Path(sys.argv[1])
           output_path = Path(sys.argv[2])
+          trial = verify_trial_release_directory(release_directory)
           build = trial.get("build")
           if not isinstance(build, dict):
-              raise SystemExit("verified bundle build record is missing")
+              raise SystemExit("verified release build record is missing")
           workflow = build.get("workflow")
           if not isinstance(workflow, dict):
-              raise SystemExit("verified bundle workflow record is missing")
+              raise SystemExit("verified release workflow record is missing")
           if build.get("source_sha") != os.environ["SOURCE_SHA"]:
-              raise SystemExit("verified bundle P does not match selected build")
+              raise SystemExit("verified release P does not match selected build")
           if workflow != {
               "repository": os.environ["REPOSITORY"],
               "run_attempt": int(os.environ["TAG"].rsplit("-a", 1)[1]),
@@ -501,26 +506,30 @@ jobs:
               "run_number": int(os.environ["TAG"].rsplit("-r", 1)[1].split("-a", 1)[0]),
               "workflow_path": ".github/workflows/build-trial-wheel.yml",
           }:
-              raise SystemExit("verified bundle workflow identity does not match selected build")
-          wheel = trial.get("wheel")
-          if not isinstance(wheel, dict) or not isinstance(wheel.get("filename"), str):
-              raise SystemExit("verified bundle wheel record is missing")
+              raise SystemExit("verified release workflow identity does not match selected build")
+          archives = [path for path in release_directory.iterdir() if path.name.endswith(".zip")]
+          if len(archives) != 1:
+              raise SystemExit("verified release archive is missing")
+          archive = archives[0]
+          sidecar = release_directory / f"{archive.name}.sha256"
           with output_path.open("a", encoding="utf-8") as output:
               output.write(f"build_id={build['id']}\n")
-              output.write(f"wheel_filename={wheel['filename']}\n")
+              output.write(f"archive_filename={archive.name}\n")
+              output.write(f"sidecar_filename={sidecar.name}\n")
           PY
 
       - name: Create the immutable tag and prerelease
         shell: bash
         env:
-          BUILD_ID: ${{ steps.bundle.outputs.build_id }}
-          BUNDLE: ${{ runner.temp }}/trial-bundle
+          ARCHIVE_FILENAME: ${{ steps.release.outputs.archive_filename }}
+          BUILD_ID: ${{ steps.release.outputs.build_id }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/trial-release
           REPOSITORY: ${{ github.repository }}
+          SIDECAR_FILENAME: ${{ steps.release.outputs.sidecar_filename }}
           SOURCE_SHA: ${{ steps.selected.outputs.source_sha }}
           TAG: ${{ steps.selected.outputs.tag }}
-          WHEEL_FILENAME: ${{ steps.bundle.outputs.wheel_filename }}
         run: |
           set -euo pipefail
           gh api -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -567,43 +576,20 @@ jobs:
           if not isinstance(object_, dict) or object_.get("type") != "commit" or object_.get("sha") != sys.argv[2]:
               raise SystemExit("created trial tag does not point to P")
           PY
-          python3 - "$BUNDLE" "$WHEEL_FILENAME" "$RUNNER_TEMP/release-assets.txt" <<'PY'
-          from pathlib import Path
-          import sys
-
-          bundle = Path(sys.argv[1])
-          wheel_filename = sys.argv[2]
-          output = Path(sys.argv[3])
-          names = (
-              wheel_filename,
-              "constraints-ubuntu24-x86_64.txt",
-              "constraints-ubuntu24-aarch64.txt",
-              "resolution-ubuntu24-x86_64.json",
-              "resolution-ubuntu24-aarch64.json",
-              "SOURCE-MANIFEST.json",
-              "TRIAL-MANIFEST.json",
-              "SHA256SUMS",
-              "Quick-Start.md",
-              "Quick-Start.ja.md",
-          )
-          paths = [bundle / name for name in names]
-          if not all(path.is_file() for path in paths):
-              raise SystemExit("verified bundle asset set changed before release")
-          output.write_text("\n".join(str(path) for path in paths) + "\n", encoding="utf-8")
-          PY
-          mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
           gh release create "$TAG" \
             --repo "$REPOSITORY" \
             --prerelease \
             --latest=false \
             --verify-tag \
             --title "GWexpy Studio trial $BUILD_ID" \
-            --notes "Trial wheel built from public source $SOURCE_SHA." \
-            "${assets[@]}"
+            --notes "Trial archive built from public source $SOURCE_SHA." \
+            "$RELEASE_DIRECTORY/$ARCHIVE_FILENAME" \
+            "$RELEASE_DIRECTORY/$SIDECAR_FILENAME"
 
       - name: Verify the release still names the tag at P
         shell: bash
         env:
+          BUILD_ID: ${{ steps.release.outputs.build_id }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SOURCE_SHA: ${{ steps.selected.outputs.source_sha }}
@@ -624,7 +610,7 @@ jobs:
             -f name="$name" \
             -f tag="$TAG" \
             > "$RUNNER_TEMP/released-release-graphql.json"
-          python3 - "$RUNNER_TEMP/released-tag.json" "$RUNNER_TEMP/released-release.json" "$RUNNER_TEMP/released-release-graphql.json" "$SOURCE_SHA" "$TAG" <<'PY'
+          python3 - "$RUNNER_TEMP/released-tag.json" "$RUNNER_TEMP/released-release.json" "$RUNNER_TEMP/released-release-graphql.json" "$SOURCE_SHA" "$TAG" "$BUILD_ID" <<'PY'
           import json
           from pathlib import Path
           import sys
@@ -637,6 +623,16 @@ jobs:
               raise SystemExit("release tag no longer points to P")
           if rest_release.get("tag_name") != sys.argv[5] or rest_release.get("prerelease") is not True:
               raise SystemExit("created release does not name the trial prerelease tag")
+          assets = rest_release.get("assets")
+          if not isinstance(assets, list) or not all(isinstance(asset, dict) for asset in assets):
+              raise SystemExit("created release assets are invalid")
+          asset_names = [asset.get("name") for asset in assets]
+          expected_assets = {
+              f"gwexpy-studio-trial-{sys.argv[6]}.zip",
+              f"gwexpy-studio-trial-{sys.argv[6]}.zip.sha256",
+          }
+          if len(asset_names) != 2 or set(asset_names) != expected_assets:
+              raise SystemExit("created release does not contain exactly the two verified assets")
           data = graphql.get("data")
           repository = data.get("repository") if isinstance(data, dict) else None
           release = repository.get("release") if isinstance(repository, dict) else None
