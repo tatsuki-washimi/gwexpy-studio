@@ -15,7 +15,10 @@ try:
     from .assemble_trial_bundle import TrialBundleError, verify_trial_bundle_bytes
 except ImportError:  # pragma: no cover
     import verify_trial_bundle as _bundle_verifier  # type: ignore
-    from assemble_trial_bundle import TrialBundleError  # type: ignore
+    from assemble_trial_bundle import (  # type: ignore
+        TrialBundleError,
+        verify_trial_bundle_bytes,
+    )
 
 
 class TrialReleaseError(RuntimeError):
@@ -113,6 +116,37 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
     if root != expected_root or archive.name != f"{expected_root}.zip":
         raise TrialReleaseError("archive root or filename does not match build ID")
     return manifest
+
+
+def verify_trial_release_directory(release_directory: Path) -> dict[str, object]:
+    """Verify exactly one archive and its matching sidecar in a directory."""
+    directory = Path(release_directory)
+    try:
+        status = directory.stat()
+        entries = list(directory.iterdir())
+    except OSError as exc:
+        raise TrialReleaseError("release directory cannot be inspected") from exc
+    if not stat.S_ISDIR(status.st_mode):
+        raise TrialReleaseError("release path is not a directory")
+    if len(entries) != 2:
+        raise TrialReleaseError("release directory must contain exactly two files")
+    for entry in entries:
+        try:
+            entry_status = entry.lstat()
+        except OSError as exc:
+            raise TrialReleaseError(
+                "release directory entry cannot be inspected"
+            ) from exc
+        if not stat.S_ISREG(entry_status.st_mode):
+            raise TrialReleaseError("release directory entries must be regular files")
+    archives = [entry for entry in entries if entry.name.endswith(".zip")]
+    if len(archives) != 1:
+        raise TrialReleaseError("release directory must contain one ZIP archive")
+    archive = archives[0]
+    sidecar = directory / f"{archive.name}.sha256"
+    if sidecar not in entries:
+        raise TrialReleaseError("release directory sidecar name is incorrect")
+    return verify_trial_release(archive, sidecar)
 
 
 def _parser() -> argparse.ArgumentParser:

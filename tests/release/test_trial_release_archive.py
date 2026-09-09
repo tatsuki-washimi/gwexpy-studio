@@ -65,6 +65,73 @@ def test_verifier_accepts_valid_archive_and_rejects_tampering(tmp_path: Path) ->
         _module().verify_trial_release(archive, sidecar)
 
 
+def test_directory_verifier_requires_exact_archive_and_sidecar_pair(
+    tmp_path: Path,
+) -> None:
+    _, archive, _ = _archive(tmp_path)
+    release = archive.parent
+    assert _module().verify_trial_release_directory(release)["schema"] == 3
+    (release / "extra.txt").write_bytes(b"unexpected")
+    with pytest.raises(_module().TrialReleaseError, match="exactly two"):
+        _module().verify_trial_release_directory(release)
+
+
+@pytest.mark.parametrize("case", ["missing", "wrong-name", "wrong-content"])
+def test_directory_verifier_rejects_missing_or_malformed_sidecar(
+    tmp_path: Path, case: str
+) -> None:
+    _, archive, sidecar = _archive(tmp_path)
+    sidecar.unlink()
+    if case == "wrong-name":
+        sidecar = archive.parent / "wrong.sha256"
+        sidecar.write_text("0" * 64 + "  " + archive.name + "\n")
+    elif case == "wrong-content":
+        sidecar = archive.parent / f"{archive.name}.sha256"
+        sidecar.write_text("0" * 64 + "  " + archive.name + "\n")
+    with pytest.raises(_module().TrialReleaseError):
+        _module().verify_trial_release_directory(archive.parent)
+
+
+def test_directory_verifier_rejects_wrong_top_level_root_and_internal_set(
+    tmp_path: Path,
+) -> None:
+    _, archive, sidecar = _archive(tmp_path)
+    with zipfile.ZipFile(archive) as original:
+        entries = [(info.filename, original.read(info)) for info in original.infolist()]
+    wrong_root = "gwexpy-studio-trial-wrong"
+    with zipfile.ZipFile(archive, "w") as output:
+        for name, data in entries:
+            output.writestr(name.replace(name.split("/", 1)[0], wrong_root), data)
+    sidecar.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
+    )
+    with pytest.raises(_module().TrialReleaseError):
+        _module().verify_trial_release_directory(archive.parent)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_directory_verifier_rejects_missing_or_extra_internal_bundle_file(
+    tmp_path: Path, mutation: str
+) -> None:
+    _, archive, sidecar = _archive(tmp_path)
+    with zipfile.ZipFile(archive) as original:
+        entries = [(info, original.read(info)) for info in original.infolist()]
+        selected = entries if mutation == "extra" else entries[:-1]
+        with zipfile.ZipFile(archive, "w") as output:
+            for info, data in selected:
+                output.writestr(info, data)
+            if mutation == "extra":
+                extra = zipfile.ZipInfo(info.filename.rsplit("/", 1)[0] + "/extra.txt")
+                extra.create_system = 3
+                extra.external_attr = (stat.S_IFREG | 0o644) << 16
+                output.writestr(extra, b"extra")
+    sidecar.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
+    )
+    with pytest.raises(_module().TrialReleaseError, match="internal"):
+        _module().verify_trial_release_directory(archive.parent)
+
+
 @pytest.mark.parametrize(
     "name", ["absolute", "parent", "backslash", "duplicate", "symlink"]
 )
