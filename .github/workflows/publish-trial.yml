@@ -128,7 +128,7 @@ jobs:
                   fail("selected workflow run is invalid")
               if run.get("id") != build_run_id:
                   fail("selected workflow run ID is invalid")
-              if run.get("path") != ".github/workflows/build-trial-wheel.yml@" + default_branch:
+              if run.get("path") != ".github/workflows/build-trial-wheel.yml":
                   fail("selected run is not Build trial wheel")
               if run.get("event") != "workflow_dispatch":
                   fail("selected build did not use the manual build workflow")
@@ -354,7 +354,7 @@ jobs:
                   fail("selected workflow run is invalid")
               if run.get("id") != build_run_id:
                   fail("selected workflow run ID is invalid")
-              if run.get("path") != ".github/workflows/build-trial-wheel.yml@" + default_branch:
+              if run.get("path") != ".github/workflows/build-trial-wheel.yml":
                   fail("selected run is not Build trial wheel")
               if run.get("event") != "workflow_dispatch":
                   fail("selected build did not use the manual build workflow")
