@@ -17,6 +17,7 @@ Git、editable install、source checkoutは必要ありません。
 ダウンロード先のディレクトリで次を実行します。
 
 ```bash
+set -euo pipefail
 shopt -s nullglob
 sidecars=(gwexpy-studio-trial-*.zip.sha256)
 test "${#sidecars[@]}" -eq 1

@@ -18,6 +18,7 @@ Both filenames start with `gwexpy-studio-trial-` and the sidecar ends in
 Run the following commands from that download directory.
 
 ```bash
+set -euo pipefail
 shopt -s nullglob
 sidecars=(gwexpy-studio-trial-*.zip.sha256)
 test "${#sidecars[@]}" -eq 1

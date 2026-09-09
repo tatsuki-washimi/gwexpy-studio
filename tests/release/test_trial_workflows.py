@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,101 @@ def _workflow(name: str) -> str:
     return (REPOSITORY_ROOT / ".github" / "workflows" / name).read_text(
         encoding="utf-8"
     )
+
+
+def _quick_start_download_block(name: str) -> str:
+    document = (REPOSITORY_ROOT / "docs" / name).read_text(encoding="utf-8")
+    blocks = re.findall(r"```bash\n(.*?)\n```", document, flags=re.DOTALL)
+    matching = [block for block in blocks if "sha256sum -c SHA256SUMS" in block]
+    assert len(matching) == 1
+    return matching[0]
+
+
+def _write_fake_unzip(tmp_path: Path, body: str) -> Path:
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    unzip = fake_bin / "unzip"
+    unzip.write_text(f"#!/bin/sh\nset -eu\n{body}\n", encoding="utf-8")
+    unzip.chmod(0o755)
+    return fake_bin
+
+
+def _run_download_block(
+    tmp_path: Path, block: str, fake_bin: Path, **extra_environment: str
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        **extra_environment,
+    }
+    return subprocess.run(
+        ["bash", "-c", block],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("name", ["Quick-Start.md", "Quick-Start.ja.md"])
+def test_quick_start_stops_before_unzip_on_outer_checksum_failure(
+    tmp_path: Path, name: str
+) -> None:
+    """A mismatched sidecar must stop before the participant ZIP is opened."""
+    archive = tmp_path / "gwexpy-studio-trial-test.zip"
+    archive.write_bytes(b"trial archive\n")
+    (tmp_path / f"{archive.name}.sha256").write_text(
+        f"{'0' * 64}  {archive.name}\n", encoding="ascii"
+    )
+    marker = tmp_path / "unzip-reached"
+    fake_bin = _write_fake_unzip(tmp_path, ': > "$UNZIP_MARKER"')
+    block = _quick_start_download_block(name)
+
+    completed = _run_download_block(
+        tmp_path, block, fake_bin, UNZIP_MARKER=str(marker)
+    )
+
+    assert completed.returncode != 0
+    assert not marker.exists()
+    assert block.splitlines()[0] == "set -euo pipefail"
+
+
+@pytest.mark.parametrize("name", ["Quick-Start.md", "Quick-Start.ja.md"])
+@pytest.mark.parametrize(
+    "unzip_body",
+    [
+        ":",
+        (
+            'bundle="${1%.zip}"\n'
+            'mkdir "$bundle"\n'
+            'printf "%064d  missing-file\\n" 0 > "$bundle/SHA256SUMS"'
+        ),
+    ],
+    ids=["missing-top-level-directory", "bad-internal-checksum"],
+)
+def test_quick_start_stops_on_cd_or_internal_checksum_failure(
+    tmp_path: Path, name: str, unzip_body: str
+) -> None:
+    """Stop after entering or checking the participant bundle fails."""
+    archive = tmp_path / "gwexpy-studio-trial-test.zip"
+    content = b"trial archive\n"
+    archive.write_bytes(content)
+    (tmp_path / f"{archive.name}.sha256").write_text(
+        f"{hashlib.sha256(content).hexdigest()}  {archive.name}\n",
+        encoding="ascii",
+    )
+    marker = tmp_path / "continued-after-failure"
+    fake_bin = _write_fake_unzip(tmp_path, unzip_body)
+    block = _quick_start_download_block(name)
+    block += '\nprintf "continued\\n" > "$AFTER_FAILURE_MARKER"'
+
+    completed = _run_download_block(
+        tmp_path, block, fake_bin, AFTER_FAILURE_MARKER=str(marker)
+    )
+
+    assert completed.returncode != 0
+    assert not marker.exists()
 
 
 def _workflow_document(name: str) -> dict[str, object]:
