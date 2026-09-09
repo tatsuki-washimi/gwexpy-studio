@@ -59,7 +59,7 @@ _BASE_VERSION = "0.1.0a1"
 _SOURCE_SHA = re.compile(r"[0-9a-f]{40}")
 _UTC_DATE = re.compile(r"[0-9]{8}")
 _TRIAL_VERSION = re.compile(
-    r"0\.1\.0a1\+trial\.p\.[0-9a-f]{7}\.[0-9]{8}\.r[1-9][0-9]*\.a[1-9][0-9]*"
+    r"0\.1\.0a1\+trial\.p\.g[0-9a-f]{7}\.[0-9]{8}\.r[1-9][0-9]*\.a[1-9][0-9]*"
 )
 _VERSION_ASSIGNMENT = re.compile(rb'^__version__ = "([^"\r\n]+)"$', re.MULTILINE)
 _VERSION_PATH = Path("src/gwexpy_studio/_version.py")
@@ -182,7 +182,7 @@ def derive_trial_identity(
         source_sha=source_sha,
         build_id=f"P-{short_sha}-{utc_date}-r{run}-a{attempt}",
         version=(
-            f"{_BASE_VERSION}+trial.p.{short_sha}.{utc_date}.r{run}.a{attempt}"
+            f"{_BASE_VERSION}+trial.p.g{short_sha}.{utc_date}.r{run}.a{attempt}"
         ),
     )
 

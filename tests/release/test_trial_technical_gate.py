@@ -25,7 +25,7 @@ def _identity() -> dict[str, str]:
         "build_id": "P-abcdef0-20260907-r1-a1",
         "python_version": "3.12.12",
         "source_sha": "abcdef0123456789abcdef0123456789abcdef01",
-        "version": "0.1.0a1+trial.p.abcdef0.20260907.r1.a1",
+        "version": "0.1.0a1+trial.p.gabcdef0.20260907.r1.a1",
     }
 
 

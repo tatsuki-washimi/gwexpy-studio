@@ -93,7 +93,10 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> N
     assert CHECKOUT in workflow
     assert DOWNLOAD not in workflow
     assert "build-trial-wheel.yml" in workflow
-    assert '".github/workflows/build-trial-wheel.yml@" + default_branch' in workflow
+    assert workflow.count(
+        'run.get("path") != ".github/workflows/build-trial-wheel.yml"'
+    ) == 2
+    assert '".github/workflows/build-trial-wheel.yml@" + default_branch' not in workflow
     assert "conclusion" in workflow
     assert "head_sha" in workflow
     assert "verify_default_head" in workflow

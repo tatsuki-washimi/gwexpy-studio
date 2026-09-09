@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
-_TRIAL_BUILD_ID = "P-abcdef0-20260907-r1-a1"
-_TRIAL_SOURCE_SHA = "abcdef0123456789abcdef0123456789abcdef01"
+_TRIAL_BUILD_ID = "P-0854741-20260907-r1-a1"
+_TRIAL_SOURCE_SHA = "0854741" + "a" * 33
 _TRIAL_SOURCE_MANIFEST_SHA256 = "b" * 64
-_TRIAL_VERSION = "0.1.0a1+trial.p.abcdef0.20260907.r1.a1"
+_TRIAL_VERSION = "0.1.0a1+trial.p.g0854741.20260907.r1.a1"
 
 
 def _write_trial_build_record(
@@ -271,7 +271,7 @@ def test_trial_launcher_rejects_an_identity_with_an_impossible_build_date(
         load_capability_manifest,
     )
 
-    version = "0.1.0a1+trial.p.abcdef0.20260230.r1.a1"
+    version = "0.1.0a1+trial.p.gabcdef0.20260230.r1.a1"
     package = tmp_path / "gwexpy_studio"
     assets = package / "assets"
     assets.mkdir(parents=True)

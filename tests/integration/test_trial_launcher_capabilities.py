@@ -12,7 +12,7 @@ from gwexpy_studio.worker.client import WorkerClient
 
 pytestmark = pytest.mark.integration
 
-_TRIAL_VERSION = "0.1.0a1+trial.p.abcdef0.20260907.r1.a1"
+_TRIAL_VERSION = "0.1.0a1+trial.p.g0854741.20260907.r1.a1"
 
 
 def _write_trial_assets(root: Path) -> Path:
@@ -22,10 +22,10 @@ def _write_trial_assets(root: Path) -> Path:
     (assets / "trial-build.json").write_text(
         json.dumps(
             {
-                "build_id": "P-abcdef0-20260907-r1-a1",
+                "build_id": "P-0854741-20260907-r1-a1",
                 "schema": 1,
                 "source_manifest_sha256": "b" * 64,
-                "source_sha": "abcdef0123456789abcdef0123456789abcdef01",
+                "source_sha": "0854741" + "a" * 33,
                 "version": _TRIAL_VERSION,
             },
             sort_keys=True,

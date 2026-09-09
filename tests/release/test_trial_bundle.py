@@ -175,7 +175,7 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
     source_manifest.write_bytes(source.to_bytes())
     source_sha = "abcdef0123456789abcdef0123456789abcdef01"
     build_id = "P-abcdef0-20260907-r1-a1"
-    version = "0.1.0a1+trial.p.abcdef0.20260907.r1.a1"
+    version = "0.1.0a1+trial.p.gabcdef0.20260907.r1.a1"
     identity = {
         "build_id": build_id,
         "source_manifest_sha256": _sha256(source_manifest.read_bytes()),
@@ -722,7 +722,7 @@ def test_assemble_rejects_a_wheel_with_a_semantically_wrong_version_stamp(
     _rewrite_wheel_member(
         inputs["wheel"],
         "gwexpy_studio/_version.py",
-        b'__version__ = "0.1.0a1+trial.p.abcdef0.20260907.r1.a1.changed"\n',
+        b'__version__ = "0.1.0a1+trial.p.gabcdef0.20260907.r1.a1.changed"\n',
     )
     _refresh_tampered_trial_bindings(inputs)
 
