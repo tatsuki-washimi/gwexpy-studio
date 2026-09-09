@@ -424,6 +424,29 @@ def test_readme_install_commands_use_the_verified_wheel_glob() -> None:
         assert "./gwexpy_studio-*.whl" in install
 
 
+def test_trial_participant_commands_isolate_python_user_paths() -> None:
+    """Trial installs and launches must not reuse user-site or PYTHONPATH code."""
+    documents = (
+        (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"),
+        (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8"),
+        (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(
+            encoding="utf-8"
+        ),
+        (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(
+            encoding="utf-8"
+        ),
+    )
+
+    for document in documents:
+        activate = document.index("conda activate gwexpy-studio")
+        disable_user_site = document.index("export PYTHONNOUSERSITE=1")
+        clear_pythonpath = document.index("unset PYTHONPATH")
+        install = document.index("pip install --only-binary=:all:")
+        launch = document.index("gwexpy-studio", install + 1)
+        assert activate < disable_user_site < install < launch
+        assert activate < clear_pythonpath < install < launch
+
+
 def test_trial_readiness_defines_the_archive_and_manual_approval_contract() -> None:
     """Release governance and participant assets match the initial trial decision."""
     readiness = (

@@ -49,10 +49,18 @@ grep '^VERSION_ID="24.04"$' /etc/os-release
 ```bash
 conda create -n gwexpy-studio python=3.12
 conda activate gwexpy-studio
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
 python --version
 conda --version
 pip --version
 ```
+
+試験中は、この二つの環境設定を同じ端末で維持してください。
+
+別のPython 3.12環境やsource checkoutにあるpackageが読み込まれることを防ぎます。
+
+別の端末を開いた場合は、conda環境をactivateし、二つの環境設定commandを再実行してからStudioを起動してください。
 
 ## Qt GL runtimeの確認
 
