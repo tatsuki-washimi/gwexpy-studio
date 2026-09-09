@@ -67,6 +67,55 @@ def test_verifier_accepts_valid_archive_and_rejects_tampering(tmp_path: Path) ->
         _module().verify_trial_release(archive, sidecar)
 
 
+@pytest.mark.parametrize("mutation", ["order", "timestamp", "compression", "comment"])
+def test_verifier_rejects_noncanonical_outer_zip(
+    tmp_path: Path, mutation: str
+) -> None:
+    _, archive, sidecar = _archive(tmp_path)
+    with zipfile.ZipFile(archive) as original:
+        entries = [(info, original.read(info)) for info in original.infolist()]
+        archive_comment = original.comment
+    if mutation == "order":
+        entries.reverse()
+    elif mutation == "timestamp":
+        entries[0][0].date_time = (2020, 1, 1, 0, 0, 0)
+    elif mutation == "compression":
+        entries[0][0].compress_type = zipfile.ZIP_DEFLATED
+    else:
+        archive_comment = b"noncanonical"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as output:
+        output.comment = archive_comment
+        for info, data in entries:
+            output.writestr(info, data)
+    sidecar.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
+    )
+    with pytest.raises(_module().TrialReleaseError, match="canonical"):
+        _module().verify_trial_release(archive, sidecar)
+
+
+def test_packaging_uses_validated_byte_snapshot_without_reread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, _, _ = _archive(tmp_path)
+    module = _module()
+    original_verify = module.verify_trial_bundle_bytes
+    mutated = bundle / "Feedback.ja.md"
+
+    def verify_then_replace(files):
+        result = original_verify(files)
+        mutated.write_bytes(b"replacement after validation\n")
+        return result
+
+    monkeypatch.setattr(module, "verify_trial_bundle_bytes", verify_then_replace)
+    archive, _ = module.package_trial_release(bundle, tmp_path / "new-release")
+    with zipfile.ZipFile(archive) as output:
+        feedback_member = next(
+            name for name in output.namelist() if name.endswith("/Feedback.ja.md")
+        )
+        assert output.read(feedback_member).startswith(b"#")
+
+
 def test_packaging_rejects_invalid_bundle_and_nonfresh_output(tmp_path: Path) -> None:
     module = _module()
     invalid_bundle = tmp_path / "invalid-bundle"
@@ -213,7 +262,7 @@ def test_directory_verifier_rejects_missing_or_extra_internal_bundle_file(
     sidecar.write_text(
         f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
     )
-    with pytest.raises(_module().TrialReleaseError, match="internal"):
+    with pytest.raises(_module().TrialReleaseError, match="internal|canonical"):
         _module().verify_trial_release_directory(archive.parent)
 
 

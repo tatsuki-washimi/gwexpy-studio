@@ -30,7 +30,8 @@ def package_trial_release(
 ) -> tuple[Path, Path]:
     """Verify a flat bundle and write its deterministic archive and sidecar."""
     try:
-        manifest = _bundle_verifier.verify_trial_bundle(Path(bundle_directory))
+        files = _bundle_verifier.read_trial_bundle_bytes(Path(bundle_directory))
+        manifest = verify_trial_bundle_bytes(files)
     except TrialBundleError as exc:
         raise TrialReleaseError("internal bundle verification failed") from exc
     build = manifest.get("build")
@@ -44,7 +45,6 @@ def package_trial_release(
             raise TrialReleaseError("output directory must be fresh and empty")
     else:
         output.mkdir(parents=True)
-    files = {path.name: path.read_bytes() for path in Path(bundle_directory).iterdir()}
     archive_path = output / f"{root}.zip"
     sidecar_path = output / f"{archive_path.name}.sha256"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -83,9 +83,13 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
             infos = contents.infolist()
             if not infos:
                 raise TrialReleaseError("archive is empty")
+            if contents.comment:
+                raise TrialReleaseError("archive is not canonical")
             names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise TrialReleaseError("archive contains duplicate entries")
+            if names != sorted(names, key=lambda name: name.encode("utf-8")):
+                raise TrialReleaseError("archive is not canonical")
             root = names[0].split("/", 1)[0]
             if not root or not root.startswith("gwexpy-studio-trial-"):
                 raise TrialReleaseError("archive root is invalid")
@@ -94,6 +98,10 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
                 name = info.filename
                 if not name or "\\" in name or name.startswith("/"):
                     raise TrialReleaseError("archive member path is unsafe")
+                if info.date_time != (1980, 1, 1, 0, 0, 0):
+                    raise TrialReleaseError("archive is not canonical")
+                if info.compress_type != zipfile.ZIP_STORED:
+                    raise TrialReleaseError("archive is not canonical")
                 parts = name.split("/")
                 if ".." in parts or len(parts) != 2 or parts[0] != root or not parts[1]:
                     raise TrialReleaseError("archive member path is unsafe")

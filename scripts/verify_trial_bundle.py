@@ -25,6 +25,11 @@ except ImportError:  # pragma: no cover - exercised by direct CLI invocation.
 
 def verify_trial_bundle(bundle_directory: Path) -> dict[str, object]:
     """Read one bundle directory exactly as named; never select a latest asset."""
+    return verify_trial_bundle_bytes(read_trial_bundle_bytes(bundle_directory))
+
+
+def read_trial_bundle_bytes(bundle_directory: Path) -> dict[str, bytes]:
+    """Capture every safe regular file in a bundle directory exactly once."""
     bundle = Path(bundle_directory)
     try:
         status = os.lstat(bundle)
@@ -36,8 +41,7 @@ def verify_trial_bundle(bundle_directory: Path) -> dict[str, object]:
         names = os.listdir(bundle)
     except OSError as exc:
         raise TrialBundleError("bundle directory cannot be listed") from exc
-    files = {name: _read_regular_bytes(bundle / name, "bundle asset") for name in names}
-    return verify_trial_bundle_bytes(files)
+    return {name: _read_regular_bytes(bundle / name, "bundle asset") for name in names}
 
 
 def _parser() -> argparse.ArgumentParser:
