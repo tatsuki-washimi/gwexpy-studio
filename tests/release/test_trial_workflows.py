@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -18,6 +20,63 @@ def _workflow(name: str) -> str:
     return (REPOSITORY_ROOT / ".github" / "workflows" / name).read_text(
         encoding="utf-8"
     )
+
+
+def _workflow_document(name: str) -> dict[str, object]:
+    document = yaml.load(_workflow(name), Loader=yaml.BaseLoader)
+    assert isinstance(document, dict)
+    return document
+
+
+def _all_uses(value: object) -> list[str]:
+    references: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == "uses":
+                assert isinstance(nested, str)
+                references.append(nested)
+            else:
+                references.extend(_all_uses(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            references.extend(_all_uses(nested))
+    return references
+
+
+@pytest.mark.parametrize("name", ["build-trial-wheel.yml", "publish-trial.yml"])
+def test_trial_workflows_can_only_be_dispatched_manually(name: str) -> None:
+    """Build and publish must not acquire push, pull-request, or timer triggers."""
+    document = _workflow_document(name)
+
+    triggers = document.get("on")
+    assert isinstance(triggers, dict)
+    assert set(triggers) == {"workflow_dispatch"}
+
+
+@pytest.mark.parametrize("name", ["build-trial-wheel.yml", "publish-trial.yml"])
+def test_every_trial_workflow_action_is_pinned_to_a_commit(name: str) -> None:
+    """Every current and future action reference must use one immutable SHA."""
+    references = _all_uses(_workflow_document(name))
+
+    assert references
+    for reference in references:
+        action, separator, revision = reference.rpartition("@")
+        assert action and separator == "@", reference
+        assert re.fullmatch(r"[0-9a-f]{40}", revision), reference
+
+
+def test_publish_workflow_does_not_claim_an_environment_review_pause() -> None:
+    """The environment has no reviewers; authorization occurs before dispatch."""
+    workflow = _workflow("publish-trial.yml").casefold()
+    stale_phrases = (
+        "before " + "approval",
+        "pre-" + "approval",
+        "post-" + "approval",
+        "after " + "approval",
+    )
+
+    for phrase in stale_phrases:
+        assert phrase not in workflow
 
 
 def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures() -> (
@@ -80,8 +139,8 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "${{ runner.temp }}/trial-bundle/*" not in upload_block
 
 
-def test_publish_trial_workflow_rechecks_an_explicit_build_after_approval() -> None:
-    """Only a protected, serialized job can turn a verified bundle into a tag."""
+def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> None:
+    """Only the serialized environment-bound job can publish a verified build."""
     workflow = _workflow("publish-trial.yml")
 
     assert "workflow_dispatch:" in workflow
