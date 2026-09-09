@@ -29,6 +29,7 @@ include docs/design/**
 include docs/development.md
 include docs/Quick-Start.md
 include docs/Quick-Start.ja.md
+include docs/Feedback.ja.md
 include docs/release/**
 exclude docs/release/artifact-inventory.md
 exclude docs/release/build-provenance.md
