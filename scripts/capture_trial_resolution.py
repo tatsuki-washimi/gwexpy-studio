@@ -209,7 +209,8 @@ _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*")
 _PYTHON_VERSION = re.compile(r"3\.12\.[0-9]+")
 _GLIBC_VERSION = re.compile(r"[0-9]+\.[0-9]+")
 _DEBIAN_VERSION = re.compile(r"[0-9][A-Za-z0-9.+:~_-]*")
-_MACHINES = frozenset({"x86_64", "aarch64"})
+_MACHINES = frozenset({"x86_64", "aarch64", "arm64"})
+_TARGETS = frozenset({"wsl2-ubuntu24", "macos15-arm64"})
 _REQUIRED_OS_ID = "ubuntu"
 _REQUIRED_OS_VERSION = "24.04"
 _STUDIO_NAME = "gwexpy-studio"
@@ -355,6 +356,7 @@ def run_installed_technical_gate(
     gate_fd: int,
     checkout_root: Path,
     work_root: Path,
+    native_qt: bool = False,
 ) -> dict[str, object]:
     """Run the normal launcher path from phase two through a sealed FD only."""
     try:
@@ -372,6 +374,7 @@ def run_installed_technical_gate(
             work_root,
             _subprocess_environment(),
             f"gwexpy-gate-{uuid.uuid4().hex}-",
+            native_qt=native_qt,
         )
         completed = subprocess.run(
             _technical_gate_command(
@@ -565,6 +568,218 @@ def build_resolution_projection(
     return projection
 
 
+def macos_platform_record(
+    *,
+    machine: str,
+    os_version: str,
+    qt_platform: str,
+    qt_version: str,
+    opengl_context: bool,
+) -> dict[str, object]:
+    """Validate and return the path-free macOS 15 ARM64 runtime record."""
+    version_pattern = r"[0-9]+(?:\.[0-9]+){1,3}"
+    if (
+        machine != "arm64"
+        or re.fullmatch(version_pattern, os_version) is None
+        or int(os_version.split(".", 1)[0]) < 15
+        or qt_platform != "cocoa"
+        or re.fullmatch(version_pattern, qt_version) is None
+        or opengl_context is not True
+    ):
+        raise ResolutionError("macOS platform evidence is invalid")
+    return {
+        "architecture": "arm64",
+        "id": "macos",
+        "qt_opengl_context": True,
+        "qt_platform": "cocoa",
+        "qt_version": qt_version,
+        "version": os_version,
+    }
+
+
+def build_macos_resolution_projection(
+    *,
+    artifact: TrialArtifact,
+    platform_record: Mapping[str, object],
+    python_version: str,
+    pip_version: str,
+    phase_one_report: Mapping[str, object],
+    phase_one_inspect: Mapping[str, object],
+    phase_two_report: Mapping[str, object],
+    phase_two_inspect: Mapping[str, object],
+    phase_one_report_bytes: bytes | None = None,
+    phase_one_inspect_bytes: bytes | None = None,
+    phase_two_report_bytes: bytes | None = None,
+    phase_two_inspect_bytes: bytes | None = None,
+    technical_gate: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Make schema-3 macOS ARM64 dependency and technical-gate evidence."""
+    _require_exact_keys(
+        platform_record,
+        {
+            "architecture",
+            "id",
+            "qt_opengl_context",
+            "qt_platform",
+            "qt_version",
+            "version",
+        },
+        "macOS platform",
+    )
+    validated_platform = macos_platform_record(
+        machine=_required_string(
+            platform_record.get("architecture"), "macOS architecture"
+        ),
+        os_version=_required_string(platform_record.get("version"), "macOS version"),
+        qt_platform=_required_string(platform_record.get("qt_platform"), "Qt platform"),
+        qt_version=_required_string(platform_record.get("qt_version"), "Qt version"),
+        opengl_context=_required_bool(
+            platform_record.get("qt_opengl_context"), "Qt OpenGL context"
+        ),
+    )
+    if _PYTHON_VERSION.fullmatch(python_version) is None:
+        raise ResolutionError("Python version must be CPython 3.12 with a patch")
+    pip_version = _required_version(pip_version, "pip version")
+    phase_one = _phase_projection(
+        report=phase_one_report,
+        inspect=phase_one_inspect,
+        artifact=artifact,
+        expected_pip_version=pip_version,
+        report_bytes=phase_one_report_bytes,
+        inspect_bytes=phase_one_inspect_bytes,
+    )
+    phase_two = _phase_projection(
+        report=phase_two_report,
+        inspect=phase_two_inspect,
+        artifact=artifact,
+        expected_pip_version=pip_version,
+        report_bytes=phase_two_report_bytes,
+        inspect_bytes=phase_two_inspect_bytes,
+    )
+    if phase_one["artifacts"] != phase_two["artifacts"]:
+        raise ResolutionError("fresh re-install selected a different runtime closure")
+    first_inspect = phase_one.get("inspect")
+    second_inspect = phase_two.get("inspect")
+    if (
+        not isinstance(first_inspect, Mapping)
+        or not isinstance(second_inspect, Mapping)
+        or first_inspect.get("installed") != second_inspect.get("installed")
+    ):
+        raise ResolutionError("fresh re-install has a different installed environment")
+    artifacts = phase_one["artifacts"]
+    if not isinstance(artifacts, list):
+        raise ResolutionError("phase one artifacts are invalid")
+    runtime = [item for item in artifacts if item["name"] != _STUDIO_NAME]
+    constraints = "".join(f"{item['name']}=={item['version']}\n" for item in runtime)
+    if technical_gate is None:
+        raise ResolutionError("macOS resolution requires the installed technical gate")
+    try:
+        validated_gate = _read_gate_result(_canonical_json(technical_gate))
+    except _GateError as exc:
+        raise ResolutionError("installed technical gate result is invalid") from exc
+    installed = validated_gate["installed"]
+    if (
+        validated_gate["status"] != "passed"
+        or validated_gate["architecture"] != "arm64"
+        or validated_gate["python_version"] != python_version
+        or not isinstance(installed, Mapping)
+        or installed.get("build_id") != artifact.build_id
+        or installed.get("source_sha") != artifact.source_sha
+        or installed.get("version") != artifact.version
+    ):
+        raise ResolutionError("installed technical gate identity disagrees")
+    return {
+        "architecture": "arm64",
+        "build_id": artifact.build_id,
+        "constraints_sha256": _sha256(constraints.encode("utf-8")),
+        "phase_one": phase_one,
+        "phase_two": phase_two,
+        "pip_version": pip_version,
+        "platform": validated_platform,
+        "python_version": python_version,
+        "runtime_artifacts": runtime,
+        "schema": 3,
+        "source_manifest_sha256": artifact.source_manifest_sha256,
+        "source_sha": artifact.source_sha,
+        "staging_manifest_sha256": artifact.staging_manifest_sha256,
+        "technical_gate": validated_gate,
+        "version": artifact.version,
+        "wheel": {
+            "filename": artifact.wheel_filename,
+            "sha256": artifact.wheel_sha256,
+        },
+    }
+
+
+_MACOS_QT_PROBE = r"""
+import json
+import platform
+import sys
+
+from PySide6.QtCore import qVersion
+from PySide6.QtGui import QGuiApplication, QOffscreenSurface, QOpenGLContext
+
+app = QGuiApplication([])
+surface = QOffscreenSurface()
+surface.create()
+context = QOpenGLContext()
+created = context.create()
+current = created and surface.isValid() and context.makeCurrent(surface)
+record = {
+    "machine": platform.machine().lower(),
+    "opengl_context": bool(current),
+    "os_version": platform.mac_ver()[0],
+    "qt_platform": app.platformName(),
+    "qt_version": qVersion(),
+}
+if current:
+    context.doneCurrent()
+print(json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+sys.exit(0 if app.primaryScreen() is not None else 1)
+"""
+
+
+def capture_macos_platform(python: Path, *, cwd: Path) -> dict[str, object]:
+    """Probe native Cocoa, a real screen, and one usable Qt OpenGL context."""
+    environment = _subprocess_environment()
+    environment.pop("QT_QPA_PLATFORM", None)
+    try:
+        completed = subprocess.run(
+            [str(python), "-I", "-c", _MACOS_QT_PROBE],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=120,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResolutionError("macOS Qt platform probe could not run") from exc
+    if completed.returncode != 0:
+        raise ResolutionError("macOS Qt platform probe failed")
+    try:
+        document = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ResolutionError("macOS Qt platform probe is invalid") from exc
+    if not isinstance(document, Mapping) or set(document) != {
+        "machine",
+        "opengl_context",
+        "os_version",
+        "qt_platform",
+        "qt_version",
+    }:
+        raise ResolutionError("macOS Qt platform probe is invalid")
+    return macos_platform_record(
+        machine=_required_string(document.get("machine"), "macOS architecture"),
+        os_version=_required_string(document.get("os_version"), "macOS version"),
+        qt_platform=_required_string(document.get("qt_platform"), "Qt platform"),
+        qt_version=_required_string(document.get("qt_version"), "Qt version"),
+        opengl_context=_required_bool(
+            document.get("opengl_context"), "Qt OpenGL context"
+        ),
+    )
+
+
 def capture_trial_resolution(
     *,
     wheel: Path,
@@ -573,6 +788,7 @@ def capture_trial_resolution(
     staging_manifest: Path,
     checkout_root: Path,
     output_directory: Path,
+    trial_target_id: str | None = None,
 ) -> tuple[Path, Path]:
     """Resolve and re-install an exact runtime closure in two fresh venvs."""
     artifact = load_trial_artifact(
@@ -581,9 +797,19 @@ def capture_trial_resolution(
         source_manifest=source_manifest,
         staging_manifest=staging_manifest,
     )
+    if trial_target_id is not None and trial_target_id not in _TARGETS:
+        raise ResolutionError("unsupported trial target")
     machine = _machine()
-    glibc_version = _glibc_version()
-    os_id, os_version = _ubuntu_release()
+    if trial_target_id == "macos15-arm64":
+        if sys.platform != "darwin" or machine != "arm64":
+            raise ResolutionError("macOS target requires a native Darwin ARM64 host")
+        glibc_version = None
+        os_release = None
+    else:
+        if sys.platform != "linux" or machine not in {"x86_64", "aarch64"}:
+            raise ResolutionError("Ubuntu target requires a native Linux host")
+        glibc_version = _glibc_version()
+        os_release = _ubuntu_release()
     try:
         checkout = _trial_source_root(checkout_root)
         verify_capture_checkout(checkout, artifact)
@@ -591,7 +817,11 @@ def capture_trial_resolution(
         temporary_parent = _trial_temporary_parent(checkout)
     except _TrialBuildError as exc:
         raise ResolutionError("resolution output location is unsafe") from exc
-    os_runtime = capture_os_runtime(machine, cwd=checkout)
+    os_runtime = (
+        None
+        if trial_target_id == "macos15-arm64"
+        else capture_os_runtime(machine, cwd=checkout)
+    )
     with tempfile.TemporaryDirectory(
         prefix=".gwexpy-studio-resolution-",
         dir=temporary_parent,
@@ -621,7 +851,9 @@ def capture_trial_resolution(
         constraints_bytes = runtime_constraints(
             phase_one_report, artifact=artifact
         ).encode("utf-8")
-        constraints_path = workspace / _constraints_filename(machine)
+        constraints_path = workspace / _constraints_filename(
+            machine, trial_target_id or "wsl2-ubuntu24"
+        )
         constraints_path.write_bytes(constraints_bytes)
 
         phase_two = _fresh_phase(workspace / "phase-two")
@@ -654,31 +886,54 @@ def capture_trial_resolution(
                 gate_fd=gate_fd,
                 checkout_root=checkout,
                 work_root=workspace,
+                native_qt=trial_target_id == "macos15-arm64",
             )
         pip_version = _pip_version(phase_two.python, workspace)
-        projection = build_resolution_projection(
-            artifact=artifact,
-            machine=machine,
-            glibc_version=glibc_version,
-            os_runtime=os_runtime,
-            python_version=_python_version(phase_two.python, workspace),
-            pip_version=pip_version,
-            phase_one_report=phase_one_report,
-            phase_one_inspect=phase_one_inspect,
-            phase_two_report=phase_two_report,
-            phase_two_inspect=phase_two_inspect,
-            phase_one_report_bytes=phase_one_report_bytes,
-            phase_one_inspect_bytes=phase_one_inspect_bytes,
-            phase_two_report_bytes=phase_two_report_bytes,
-            phase_two_inspect_bytes=phase_two_inspect_bytes,
-            technical_gate=technical_gate,
-            os_id=os_id,
-            os_version=os_version,
-        )
+        python_version = _python_version(phase_two.python, workspace)
+        if trial_target_id == "macos15-arm64":
+            projection = build_macos_resolution_projection(
+                artifact=artifact,
+                python_version=python_version,
+                pip_version=pip_version,
+                phase_one_report=phase_one_report,
+                phase_one_inspect=phase_one_inspect,
+                phase_two_report=phase_two_report,
+                phase_two_inspect=phase_two_inspect,
+                phase_one_report_bytes=phase_one_report_bytes,
+                phase_one_inspect_bytes=phase_one_inspect_bytes,
+                phase_two_report_bytes=phase_two_report_bytes,
+                phase_two_inspect_bytes=phase_two_inspect_bytes,
+                technical_gate=technical_gate,
+                platform_record=capture_macos_platform(phase_two.python, cwd=workspace),
+            )
+        else:
+            assert glibc_version is not None
+            assert os_runtime is not None
+            assert os_release is not None
+            projection = build_resolution_projection(
+                artifact=artifact,
+                machine=machine,
+                python_version=python_version,
+                pip_version=pip_version,
+                glibc_version=glibc_version,
+                os_runtime=os_runtime,
+                os_id=os_release[0],
+                os_version=os_release[1],
+                phase_one_report=phase_one_report,
+                phase_one_inspect=phase_one_inspect,
+                phase_two_report=phase_two_report,
+                phase_two_inspect=phase_two_inspect,
+                phase_one_report_bytes=phase_one_report_bytes,
+                phase_one_inspect_bytes=phase_one_inspect_bytes,
+                phase_two_report_bytes=phase_two_report_bytes,
+                phase_two_inspect_bytes=phase_two_inspect_bytes,
+                technical_gate=technical_gate,
+            )
         if projection["constraints_sha256"] != _sha256(constraints_bytes):
             raise ResolutionError("generated constraints digest does not match closure")
-        constraints_name = _constraints_filename(machine)
-        resolution_name = _resolution_filename(machine)
+        target_name = trial_target_id or "wsl2-ubuntu24"
+        constraints_name = _constraints_filename(machine, target_name)
+        resolution_name = _resolution_filename(machine, target_name)
         _publish_evidence(
             {
                 constraints_name: constraints_bytes,
@@ -755,20 +1010,24 @@ def seal_technical_gate_script(
         ):
             raise ResolutionError("technical-gate script seal does not match P")
         named = os.stat(destination, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(named.st_mode)
-            or (named.st_dev, named.st_ino) != (sealed.st_dev, sealed.st_ino)
+        if not stat.S_ISREG(named.st_mode) or (named.st_dev, named.st_ino) != (
+            sealed.st_dev,
+            sealed.st_ino,
         ):
             raise ResolutionError("technical-gate script seal name changed")
         os.unlink(destination)
+        descriptor_path = (
+            f"/proc/self/fd/{descriptor}"
+            if Path("/proc/self/fd").is_dir()
+            else f"/dev/fd/{descriptor}"
+        )
         readonly_descriptor = os.open(
-            f"/proc/self/fd/{descriptor}",
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+            descriptor_path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         )
         readonly = os.fstat(readonly_descriptor)
-        if (
-            not stat.S_ISREG(readonly.st_mode)
-            or (readonly.st_dev, readonly.st_ino) != (sealed.st_dev, sealed.st_ino)
+        if not stat.S_ISREG(readonly.st_mode) or (readonly.st_dev, readonly.st_ino) != (
+            sealed.st_dev,
+            sealed.st_ino,
         ):
             raise ResolutionError("technical-gate sealed descriptor changed")
         os.lseek(readonly_descriptor, 0, os.SEEK_SET)
@@ -1608,16 +1867,25 @@ def _subprocess_environment() -> dict[str, str]:
     return environment
 
 
-def _constraints_filename(machine: str) -> str:
-    return f"constraints-ubuntu24-{machine}.txt"
+def _constraints_filename(machine: str, target_id: str = "wsl2-ubuntu24") -> str:
+    if target_id == "wsl2-ubuntu24" and machine in {"x86_64", "aarch64"}:
+        return f"constraints-ubuntu24-{machine}.txt"
+    if target_id == "macos15-arm64" and machine == "arm64":
+        return "constraints-macos15-arm64.txt"
+    raise ResolutionError("resolution target architecture is unsupported")
 
 
-def _resolution_filename(machine: str) -> str:
-    return f"resolution-ubuntu24-{machine}.json"
+def _resolution_filename(machine: str, target_id: str = "wsl2-ubuntu24") -> str:
+    if target_id == "wsl2-ubuntu24" and machine in {"x86_64", "aarch64"}:
+        return f"resolution-ubuntu24-{machine}.json"
+    if target_id == "macos15-arm64" and machine == "arm64":
+        return "resolution-macos15-arm64.json"
+    raise ResolutionError("resolution target architecture is unsupported")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--trial-target", choices=("wsl2-ubuntu24", "macos15-arm64"))
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--trial-manifest", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
@@ -1638,6 +1906,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             staging_manifest=arguments.staging_manifest,
             checkout_root=arguments.checkout,
             output_directory=arguments.output,
+            trial_target_id=arguments.trial_target,
         )
     except ResolutionError as exc:
         print(f"capture_trial_resolution: error: {exc}", file=sys.stderr)

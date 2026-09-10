@@ -11,7 +11,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import uuid
 from collections.abc import Mapping, Sequence
+from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +56,7 @@ _CHECK_NAMES = (
     "worker_exit",
     "shared_memory_cleanup",
 )
-_MACHINES = frozenset({"x86_64", "aarch64"})
+_MACHINES = frozenset({"x86_64", "aarch64", "arm64"})
 _PYTHON_VERSION = re.compile(r"3\.12\.[0-9]+")
 _SOURCE_SHA = re.compile(r"[0-9a-f]{40}")
 _BUILD_ID = re.compile(r"P-[0-9a-f]{7}-[0-9]{8}-r[1-9][0-9]*-a[1-9][0-9]*")
@@ -114,6 +116,8 @@ def gate_environment(
     root: Path,
     inherited: Mapping[str, str],
     shm_prefix: str,
+    *,
+    native_qt: bool = False,
 ) -> dict[str, str]:
     """Build the isolated environment used by the external offscreen process."""
     safe_characters = (
@@ -129,6 +133,7 @@ def gate_environment(
             "GWEXPY_STUDIO_IO_CAPABILITIES",
             "PYTHONHOME",
             "PYTHONPATH",
+            *(("QT_QPA_PLATFORM",) if native_qt else ()),
         } or name.startswith("PIP_"):
             environment.pop(name, None)
     environment.update(
@@ -136,7 +141,6 @@ def gate_environment(
             "HOME": str(root / "home"),
             "MPLBACKEND": "Agg",
             "MPLCONFIGDIR": str(root / "mpl"),
-            "QT_QPA_PLATFORM": "offscreen",
             "XDG_CACHE_HOME": str(root / "cache"),
             "XDG_CONFIG_HOME": str(root / "config"),
             "XDG_DATA_HOME": str(root / "data"),
@@ -144,7 +148,40 @@ def gate_environment(
             "GWEXPY_STUDIO_SHM_PREFIX": shm_prefix,
         }
     )
+    if not native_qt:
+        environment["QT_QPA_PLATFORM"] = "offscreen"
     return environment
+
+
+def shared_memory_cleanup_probe(prefix: str) -> bool:
+    """Prove portable unlink semantics by rejecting a post-unlink reattach."""
+    safe_characters = (
+        "-_.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    )
+    if not prefix or any(character not in safe_characters for character in prefix):
+        raise GateError("technical-gate shared-memory prefix is unsafe")
+    name = f"{prefix}cleanup-probe-{uuid.uuid4().hex}"
+    block: shared_memory.SharedMemory | None = None
+    try:
+        block = shared_memory.SharedMemory(name=name, create=True, size=1)
+        block.unlink()
+        block.close()
+        block = None
+        try:
+            unexpected = shared_memory.SharedMemory(name=name)
+        except FileNotFoundError:
+            return True
+        unexpected.close()
+        return False
+    except (FileExistsError, OSError) as exc:
+        raise GateError("technical-gate shared-memory probe failed") from exc
+    finally:
+        if block is not None:
+            try:
+                block.close()
+                block.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def gate_result_json(
@@ -386,6 +423,23 @@ def run_external_recovery_gate(
         if phase == "producer":
             if project.is_symlink() or not project.is_file():
                 raise GateError("technical-gate producer did not save a project")
+            exported = work_root / "python-export.py"
+            if exported.is_symlink() or not exported.is_file():
+                raise GateError("technical-gate producer did not export Python")
+            try:
+                replay = subprocess.run(
+                    (str(phase_python), str(exported)),
+                    cwd=work_root,
+                    capture_output=True,
+                    check=False,
+                    env=os.environ.copy(),
+                    text=False,
+                    timeout=120,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GateError("technical-gate Python export could not run") from exc
+            if replay.returncode != 0:
+                raise GateError("technical-gate Python export failed")
             for name in (
                 "launcher_import",
                 "welcome",
@@ -491,9 +545,7 @@ def _wait_for_sample_catalog(
     """Wait until the asynchronous Try Sample catalog enables inspection."""
     _wait(
         app,
-        lambda: (
-            window.bridge.state is idle_state and panel.inspect_button.isEnabled()
-        ),
+        lambda: window.bridge.state is idle_state and panel.inspect_button.isEnabled(),
         "sample catalog",
     )
 
@@ -698,6 +750,15 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
             )
             if not project.is_file():
                 raise GateError("technical-gate producer did not save a project")
+            exported = work_root / "python-export.py"
+            if exported.exists():
+                raise GateError("Python export path is not fresh")
+            window.export_to_file(str(exported))
+            _wait(
+                app,
+                lambda: window.bridge.state is BridgeState.IDLE and exported.is_file(),
+                "Python export",
+            )
             os.kill(os.getpid(), signal.SIGKILL)
         except BaseException as exc:
             failure.append(exc)
@@ -789,9 +850,7 @@ def _schedule_message_box_button(
     return state
 
 
-def _run_consumer_launcher(
-    *, checkout: Path, project: Path, work_root: Path
-) -> None:
+def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) -> None:
     """Open a saved project in a fresh launcher and explicitly restore recovery."""
     import site
 
@@ -957,8 +1016,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise GateError("technical-gate result path is outside its workspace")
         if result.exists() or result.is_symlink():
             raise GateError("technical-gate result path is not fresh")
-        if sys.platform != "linux":
-            raise GateError("technical-gate recovery qualification requires Linux")
+        if sys.platform not in {"linux", "darwin"}:
+            raise GateError("technical-gate recovery qualification requires POSIX")
         run_external_recovery_gate(
             checks=checks,
             checkout=arguments.checkout.resolve(strict=True),
@@ -970,9 +1029,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         prefix = os.environ.get("GWEXPY_STUDIO_SHM_PREFIX")
         if not prefix:
             raise GateError("technical-gate shared-memory prefix is unavailable")
-        checks["shared_memory_cleanup"] = not any(
+        portable_cleanup = shared_memory_cleanup_probe(prefix)
+        linux_namespace_clean = sys.platform != "linux" or not any(
             Path("/dev/shm").glob(f"{prefix}*")
         )
+        checks["shared_memory_cleanup"] = portable_cleanup and linux_namespace_clean
         if not checks["shared_memory_cleanup"]:
             raise GateError("technical-gate shared memory was not cleaned up")
         _remove_xdg_roots(work_root)

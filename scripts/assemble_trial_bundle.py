@@ -42,6 +42,7 @@ try:  # Support both ``python scripts/...`` and ``import scripts...``.
         manifest_digest,
     )
     from .run_trial_technical_gate import GateError, read_gate_result
+    from .trial_targets import TrialTarget, TrialTargetError, trial_target
 except ImportError:  # pragma: no cover - exercised by direct CLI invocation.
     import capture_trial_resolution as _trial_resolution  # type: ignore[no-redef]
     from build_trial_wheel import (  # type: ignore[no-redef]
@@ -68,6 +69,11 @@ except ImportError:  # pragma: no cover - exercised by direct CLI invocation.
         GateError,
         read_gate_result,
     )
+    from trial_targets import (  # type: ignore[no-redef]
+        TrialTarget,
+        TrialTargetError,
+        trial_target,
+    )
 
 
 class TrialBundleError(RuntimeError):
@@ -91,7 +97,7 @@ class _TrialInputs:
     wheel_sha256: str
 
 
-_ASSET_NAMES = frozenset(
+_SCHEMA3_ASSET_NAMES = frozenset(
     {
         "constraints-ubuntu24-aarch64.txt",
         "constraints-ubuntu24-x86_64.txt",
@@ -150,6 +156,7 @@ _FINAL_FIELDS = {
     "staging",
     "wheel",
 }
+_FINAL_FIELDS_V4 = _FINAL_FIELDS | {"target"}
 _RESOLUTION_FIELDS = {
     "architecture",
     "build_id",
@@ -161,6 +168,24 @@ _RESOLUTION_FIELDS = {
     "phase_one",
     "phase_two",
     "pip_version",
+    "python_version",
+    "runtime_artifacts",
+    "schema",
+    "source_manifest_sha256",
+    "source_sha",
+    "staging_manifest_sha256",
+    "technical_gate",
+    "version",
+    "wheel",
+}
+_MACOS_RESOLUTION_FIELDS = {
+    "architecture",
+    "build_id",
+    "constraints_sha256",
+    "phase_one",
+    "phase_two",
+    "pip_version",
+    "platform",
     "python_version",
     "runtime_artifacts",
     "schema",
@@ -306,16 +331,145 @@ def assemble_trial_bundle(
     return output_directory
 
 
+def assemble_platform_trial_bundle(
+    *,
+    output_directory: Path,
+    wheel: Path,
+    preliminary_trial_manifest: Path,
+    source_manifest: Path,
+    staging_manifest: Path,
+    architecture_evidence: Mapping[str, tuple[Path, Path]],
+    quick_start: Path,
+    quick_start_ja: Path,
+    feedback_ja: Path,
+    trial_target_id: str,
+    repository: str,
+    build_workflow_path: str,
+    build_run_id: int,
+    build_run_number: int,
+    build_run_attempt: int,
+) -> Path:
+    """Assemble one target-bound schema-4 trial bundle."""
+    try:
+        target = trial_target(trial_target_id)
+    except TrialTargetError as exc:
+        raise TrialBundleError(str(exc)) from exc
+    if set(architecture_evidence) != set(target.architectures):
+        raise TrialBundleError("architecture evidence does not match trial target")
+    inputs = _load_trial_inputs(
+        wheel=wheel,
+        preliminary_trial_manifest=preliminary_trial_manifest,
+        source_manifest=source_manifest,
+        staging_manifest=staging_manifest,
+    )
+    workflow = _workflow_identity(
+        repository=repository,
+        workflow_path=build_workflow_path,
+        run_id=build_run_id,
+        run_number=build_run_number,
+        run_attempt=build_run_attempt,
+        build_id=inputs.build_id,
+    )
+    quick_start_bytes = _read_regular_bytes(quick_start, "English Quick Start")
+    quick_start_ja_bytes = _read_regular_bytes(quick_start_ja, "Japanese Quick Start")
+    feedback_bytes = _read_regular_bytes(feedback_ja, "Japanese feedback form")
+    document_sources = {
+        "en": target.quick_start_source("en"),
+        "ja": target.quick_start_source("ja"),
+        "feedback": target.feedback_source(),
+    }
+    for source_path, content in (
+        (document_sources["en"], quick_start_bytes),
+        (document_sources["ja"], quick_start_ja_bytes),
+        (document_sources["feedback"], feedback_bytes),
+    ):
+        _verify_quick_start_source(inputs.source_manifest, source_path, content)
+    architecture_records = {
+        architecture: _architecture_record(
+            architecture=architecture,
+            constraints=architecture_evidence[architecture][0],
+            resolution=architecture_evidence[architecture][1],
+            inputs=inputs,
+            target=target,
+        )
+        for architecture in target.architectures
+    }
+    final_manifest = {
+        "architectures": architecture_records,
+        "build": {
+            "id": inputs.build_id,
+            "source_sha": inputs.source_sha,
+            "version": inputs.version,
+            "workflow": workflow,
+        },
+        "feedback": {
+            "filename": "Feedback.ja.md",
+            "sha256": _sha256(feedback_bytes),
+            "source_path": document_sources["feedback"],
+        },
+        "preliminary_trial_manifest_sha256": (inputs.preliminary_trial_manifest_sha256),
+        "quick_start": {
+            "en": {
+                "filename": "Quick-Start.md",
+                "sha256": _sha256(quick_start_bytes),
+                "source_path": document_sources["en"],
+            },
+            "ja": {
+                "filename": "Quick-Start.ja.md",
+                "sha256": _sha256(quick_start_ja_bytes),
+                "source_path": document_sources["ja"],
+            },
+        },
+        "schema": 4,
+        "source": {
+            "manifest_filename": "SOURCE-MANIFEST.json",
+            "manifest_sha256": inputs.source_manifest_sha256,
+        },
+        "staging": {
+            "generated_files": _generated_records(inputs.generated_files),
+            "manifest_sha256": inputs.staging_manifest_sha256,
+        },
+        "target": target.manifest_record(),
+        "wheel": {
+            "filename": inputs.wheel_filename,
+            "sha256": inputs.wheel_sha256,
+        },
+    }
+    files = {
+        inputs.wheel_filename: inputs.wheel_bytes,
+        "SOURCE-MANIFEST.json": _manifest_bytes(inputs.source_manifest),
+        "TRIAL-MANIFEST.json": _canonical_json(final_manifest),
+        "Quick-Start.md": quick_start_bytes,
+        "Quick-Start.ja.md": quick_start_ja_bytes,
+        "Feedback.ja.md": feedback_bytes,
+    }
+    for architecture in target.architectures:
+        constraints, resolution = architecture_evidence[architecture]
+        files[target.constraints_filename(architecture)] = _read_regular_bytes(
+            constraints, f"{architecture} constraints"
+        )
+        files[target.resolution_filename(architecture)] = _read_regular_bytes(
+            resolution, f"{architecture} resolution"
+        )
+    files["SHA256SUMS"] = _checksums(files)
+    verify_trial_bundle_bytes(files)
+    _publish_bundle(files, output_directory)
+    return output_directory
+
+
 def verify_trial_bundle_bytes(files: Mapping[str, bytes]) -> dict[str, object]:
     """Verify all final bundle bytes without a checkout, network, or discovery."""
     material = _validated_file_mapping(files)
     trial = _canonical_object(material["TRIAL-MANIFEST.json"], "trial manifest")
-    if (
-        not isinstance(trial, dict)
-        or set(trial) != _FINAL_FIELDS
-        or trial["schema"] != 3
-    ):
+    if not isinstance(trial, dict) or trial.get("schema") not in {3, 4}:
         raise TrialBundleError("final trial manifest schema is invalid")
+    schema = cast(int, trial["schema"])
+    expected_fields = _FINAL_FIELDS if schema == 3 else _FINAL_FIELDS_V4
+    if set(trial) != expected_fields:
+        raise TrialBundleError("final trial manifest schema is invalid")
+    target: TrialTarget | None = None
+    if schema == 4:
+        target = _validated_target_record(trial["target"])
     build = _mapping(trial["build"], "final build")
     _require_keys(build, {"id", "source_sha", "version", "workflow"}, "final build")
     build_id = _required_string(build["id"], "build ID")
@@ -403,9 +557,10 @@ def verify_trial_bundle_bytes(files: Mapping[str, bytes]) -> dict[str, object]:
         )
 
     architectures = _mapping(trial["architectures"], "architecture records")
-    if set(architectures) != set(_ARCHITECTURES):
-        raise TrialBundleError("final manifest must contain both native architectures")
-    for architecture in _ARCHITECTURES:
+    expected_architectures = _ARCHITECTURES if target is None else target.architectures
+    if set(architectures) != set(expected_architectures):
+        raise TrialBundleError("final manifest architecture set is invalid")
+    for architecture in expected_architectures:
         _verify_architecture_bundle_record(
             architecture=architecture,
             record=architectures[architecture],
@@ -417,9 +572,12 @@ def verify_trial_bundle_bytes(files: Mapping[str, bytes]) -> dict[str, object]:
             version=version,
             wheel_filename=wheel_filename,
             wheel_sha256=wheel_sha256,
+            target=target,
         )
-    _verify_quick_start_records(trial["quick_start"], source_manifest, material)
-    _verify_feedback_record(trial["feedback"], source_manifest, material)
+    _verify_quick_start_records(
+        trial["quick_start"], source_manifest, material, target=target
+    )
+    _verify_feedback_record(trial["feedback"], source_manifest, material, target=target)
     expected_checksums = _checksums(
         {name: content for name, content in material.items() if name != "SHA256SUMS"}
     )
@@ -526,11 +684,20 @@ def _architecture_record(
     constraints: Path,
     resolution: Path,
     inputs: _TrialInputs,
+    target: TrialTarget | None = None,
 ) -> dict[str, object]:
     constraints_bytes = _read_regular_bytes(constraints, f"{architecture} constraints")
     resolution_bytes = _read_regular_bytes(resolution, f"{architecture} resolution")
-    expected_constraints = f"constraints-ubuntu24-{architecture}.txt"
-    expected_resolution = f"resolution-ubuntu24-{architecture}.json"
+    expected_constraints = (
+        f"constraints-ubuntu24-{architecture}.txt"
+        if target is None
+        else target.constraints_filename(architecture)
+    )
+    expected_resolution = (
+        f"resolution-ubuntu24-{architecture}.json"
+        if target is None
+        else target.resolution_filename(architecture)
+    )
     if (
         constraints.name != expected_constraints
         or resolution.name != expected_resolution
@@ -541,6 +708,7 @@ def _architecture_record(
         constraints_bytes=constraints_bytes,
         architecture=architecture,
         inputs=inputs,
+        target=target,
     )
     return {
         "constraints": {
@@ -561,9 +729,15 @@ def _validate_resolution(
     constraints_bytes: bytes,
     architecture: str,
     inputs: _TrialInputs,
+    target: TrialTarget | None = None,
 ) -> dict[str, object]:
     document = _canonical_object(resolution_bytes, f"{architecture} resolution")
-    if not isinstance(document, dict) or set(document) != _RESOLUTION_FIELDS:
+    expected_fields = (
+        _MACOS_RESOLUTION_FIELDS
+        if target is not None and target.id == "macos15-arm64"
+        else _RESOLUTION_FIELDS
+    )
+    if not isinstance(document, dict) or set(document) != expected_fields:
         raise TrialBundleError("resolution schema is invalid")
     return _validate_resolution_document(
         document=document,
@@ -576,6 +750,7 @@ def _validate_resolution(
         version=inputs.version,
         wheel_filename=inputs.wheel_filename,
         wheel_sha256=inputs.wheel_sha256,
+        target=target,
     )
 
 
@@ -591,11 +766,17 @@ def _validate_resolution_document(
     version: str,
     wheel_filename: str,
     wheel_sha256: str,
+    target: TrialTarget | None = None,
 ) -> dict[str, object]:
     """Bind one captured native closure to the final wheel identity."""
-    if document.get("schema") != 2 or document.get("architecture") != architecture:
+    expected_schema = 3 if target is not None and target.id == "macos15-arm64" else 2
+    if (
+        document.get("schema") != expected_schema
+        or document.get("architecture") != architecture
+    ):
         raise TrialBundleError("resolution architecture is invalid")
-    if architecture not in _ARCHITECTURES:
+    supported_architectures = _ARCHITECTURES if target is None else target.architectures
+    if architecture not in supported_architectures:
         raise TrialBundleError("resolution architecture is unsupported")
     identities = {
         "build_id": build_id,
@@ -607,19 +788,22 @@ def _validate_resolution_document(
     for field, expected in identities.items():
         if document.get(field) != expected:
             raise TrialBundleError("resolution identity does not match the wheel")
-    if document.get("os_id") != "ubuntu" or document.get("os_version") != "24.04":
-        raise TrialBundleError("resolution host is not Ubuntu 24.04")
-    try:
-        _trial_resolution.validate_os_runtime(
-            document.get("os_runtime"), machine=architecture
-        )
-    except _trial_resolution.ResolutionError as exc:
-        raise TrialBundleError("resolution OS runtime is invalid") from exc
-    glibc_version = document.get("glibc_version")
-    if not isinstance(glibc_version, str) or not re.fullmatch(
-        r"[0-9]+\.[0-9]+", glibc_version
-    ):
-        raise TrialBundleError("resolution glibc version is invalid")
+    if target is not None and target.id == "macos15-arm64":
+        _validate_macos_platform(document.get("platform"), architecture)
+    else:
+        if document.get("os_id") != "ubuntu" or document.get("os_version") != "24.04":
+            raise TrialBundleError("resolution host is not Ubuntu 24.04")
+        try:
+            _trial_resolution.validate_os_runtime(
+                document.get("os_runtime"), machine=architecture
+            )
+        except _trial_resolution.ResolutionError as exc:
+            raise TrialBundleError("resolution OS runtime is invalid") from exc
+        glibc_version = document.get("glibc_version")
+        if not isinstance(glibc_version, str) or not re.fullmatch(
+            r"[0-9]+\.[0-9]+", glibc_version
+        ):
+            raise TrialBundleError("resolution glibc version is invalid")
     python_version = document.get("python_version")
     if (
         not isinstance(python_version, str)
@@ -731,6 +915,38 @@ def _verify_resolution_phases(
     return phase_one_artifacts
 
 
+def _validate_macos_platform(value: object, architecture: str) -> None:
+    """Require path-free native Cocoa/OpenGL evidence from macOS 15 ARM64."""
+    platform_record = _mapping(value, "macOS platform")
+    _require_keys(
+        platform_record,
+        {
+            "architecture",
+            "id",
+            "qt_opengl_context",
+            "qt_platform",
+            "qt_version",
+            "version",
+        },
+        "macOS platform",
+    )
+    version = platform_record.get("version")
+    qt_version = platform_record.get("qt_version")
+    if (
+        architecture != "arm64"
+        or platform_record.get("architecture") != "arm64"
+        or platform_record.get("id") != "macos"
+        or platform_record.get("qt_platform") != "cocoa"
+        or platform_record.get("qt_opengl_context") is not True
+        or not isinstance(version, str)
+        or re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", version) is None
+        or int(version.split(".", 1)[0]) < 15
+        or not isinstance(qt_version, str)
+        or re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", qt_version) is None
+    ):
+        raise TrialBundleError("macOS platform evidence is invalid")
+
+
 def _artifact_records(
     value: object, label: str, *, allow_studio: bool
 ) -> list[dict[str, str]]:
@@ -815,6 +1031,7 @@ def _verify_architecture_bundle_record(
     version: str,
     wheel_filename: str,
     wheel_sha256: str,
+    target: TrialTarget | None = None,
 ) -> None:
     payload = _mapping(record, f"{architecture} bundle record")
     _require_keys(
@@ -824,8 +1041,16 @@ def _verify_architecture_bundle_record(
     resolution = _mapping(payload["resolution"], "bundle resolution")
     _require_keys(constraints, {"filename", "sha256"}, "bundle constraints")
     _require_keys(resolution, {"filename", "sha256"}, "bundle resolution")
-    expected_constraints = f"constraints-ubuntu24-{architecture}.txt"
-    expected_resolution = f"resolution-ubuntu24-{architecture}.json"
+    expected_constraints = (
+        f"constraints-ubuntu24-{architecture}.txt"
+        if target is None
+        else target.constraints_filename(architecture)
+    )
+    expected_resolution = (
+        f"resolution-ubuntu24-{architecture}.json"
+        if target is None
+        else target.resolution_filename(architecture)
+    )
     if (
         constraints.get("filename") != expected_constraints
         or resolution.get("filename") != expected_resolution
@@ -844,7 +1069,12 @@ def _verify_architecture_bundle_record(
     ):
         raise TrialBundleError("bundle resolution digest is invalid")
     document = _canonical_object(resolution_bytes, "bundle resolution")
-    if not isinstance(document, dict) or set(document) != _RESOLUTION_FIELDS:
+    expected_fields = (
+        _MACOS_RESOLUTION_FIELDS
+        if target is not None and target.id == "macos15-arm64"
+        else _RESOLUTION_FIELDS
+    )
+    if not isinstance(document, dict) or set(document) != expected_fields:
         raise TrialBundleError("bundle resolution schema is invalid")
     gate = _validate_resolution_document(
         document=document,
@@ -857,6 +1087,7 @@ def _verify_architecture_bundle_record(
         version=version,
         wheel_filename=wheel_filename,
         wheel_sha256=wheel_sha256,
+        target=target,
     )
     if payload["technical_gate"] != gate:
         raise TrialBundleError("bundle technical gate is not the resolution gate")
@@ -866,13 +1097,25 @@ def _verify_quick_start_records(
     value: object,
     source_manifest: ReleaseSourceManifest,
     files: Mapping[str, bytes],
+    *,
+    target: TrialTarget | None = None,
 ) -> None:
     quick_start = _mapping(value, "Quick Start record")
     if set(quick_start) != {"en", "ja"}:
         raise TrialBundleError("Quick Start records are incomplete")
     expected = {
-        "en": ("Quick-Start.md", "docs/Quick-Start.md"),
-        "ja": ("Quick-Start.ja.md", "docs/Quick-Start.ja.md"),
+        "en": (
+            "Quick-Start.md",
+            "docs/Quick-Start.md"
+            if target is None
+            else target.quick_start_source("en"),
+        ),
+        "ja": (
+            "Quick-Start.ja.md",
+            "docs/Quick-Start.ja.md"
+            if target is None
+            else target.quick_start_source("ja"),
+        ),
     }
     for language, (filename, source_path) in expected.items():
         record = _mapping(quick_start[language], f"{language} Quick Start")
@@ -903,12 +1146,17 @@ def _verify_feedback_record(
     value: object,
     source_manifest: ReleaseSourceManifest,
     files: Mapping[str, bytes],
+    *,
+    target: TrialTarget | None = None,
 ) -> None:
     record = _mapping(value, "feedback record")
     _require_keys(record, {"filename", "sha256", "source_path"}, "feedback record")
+    expected_source = (
+        "docs/Feedback.ja.md" if target is None else target.feedback_source()
+    )
     if (
         record.get("filename") != "Feedback.ja.md"
-        or record.get("source_path") != "docs/Feedback.ja.md"
+        or record.get("source_path") != expected_source
     ):
         raise TrialBundleError("feedback record has an unexpected path")
     content = files.get("Feedback.ja.md")
@@ -916,7 +1164,7 @@ def _verify_feedback_record(
         raise TrialBundleError("feedback asset is missing or empty")
     if _required_sha(record["sha256"], "feedback") != _sha256(content):
         raise TrialBundleError("feedback digest is invalid")
-    _verify_quick_start_source(source_manifest, "docs/Feedback.ja.md", content)
+    _verify_quick_start_source(source_manifest, expected_source, content)
 
 
 def _generated_wheel_files(
@@ -1241,10 +1489,49 @@ def _validated_file_mapping(files: Mapping[str, bytes]) -> dict[str, bytes]:
     wheel = document.get("wheel")
     if not isinstance(wheel, Mapping) or not isinstance(wheel.get("filename"), str):
         raise TrialBundleError("bundle wheel record is invalid")
-    expected = set(_ASSET_NAMES) | {wheel["filename"]}
+    if document.get("schema") == 3:
+        expected = set(_SCHEMA3_ASSET_NAMES) | {wheel["filename"]}
+    elif document.get("schema") == 4:
+        target = _validated_target_record(document.get("target"))
+        expected = {
+            "Feedback.ja.md",
+            "Quick-Start.ja.md",
+            "Quick-Start.md",
+            "SHA256SUMS",
+            "SOURCE-MANIFEST.json",
+            "TRIAL-MANIFEST.json",
+            wheel["filename"],
+            *(
+                target.constraints_filename(architecture)
+                for architecture in target.architectures
+            ),
+            *(
+                target.resolution_filename(architecture)
+                for architecture in target.architectures
+            ),
+        }
+    else:
+        raise TrialBundleError("final trial manifest schema is invalid")
     if set(result) != expected:
         raise TrialBundleError("bundle has missing or unexpected assets")
     return result
+
+
+def _validated_target_record(value: object) -> TrialTarget:
+    record = _mapping(value, "trial target")
+    _require_keys(
+        record,
+        {"architectures", "guest_os", "host_min_version", "host_os", "id"},
+        "trial target",
+    )
+    target_id = _required_string(record.get("id"), "trial target ID")
+    try:
+        target = trial_target(target_id)
+    except TrialTargetError as exc:
+        raise TrialBundleError(str(exc)) from exc
+    if dict(record) != target.manifest_record():
+        raise TrialBundleError("trial target record does not match its ID")
+    return target
 
 
 def _read_regular_bytes(path: Path, label: str) -> bytes:
@@ -1402,10 +1689,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trial-manifest", required=True, type=Path)
     parser.add_argument("--source-manifest", required=True, type=Path)
     parser.add_argument("--staging-manifest", required=True, type=Path)
-    parser.add_argument("--constraints-x86-64", required=True, type=Path)
-    parser.add_argument("--resolution-x86-64", required=True, type=Path)
-    parser.add_argument("--constraints-aarch64", required=True, type=Path)
-    parser.add_argument("--resolution-aarch64", required=True, type=Path)
+    parser.add_argument("--trial-target", choices=("wsl2-ubuntu24", "macos15-arm64"))
+    parser.add_argument("--constraints-x86-64", type=Path)
+    parser.add_argument("--resolution-x86-64", type=Path)
+    parser.add_argument("--constraints-aarch64", type=Path)
+    parser.add_argument("--resolution-aarch64", type=Path)
+    parser.add_argument("--constraints-arm64", type=Path)
+    parser.add_argument("--resolution-arm64", type=Path)
     parser.add_argument("--quick-start", required=True, type=Path)
     parser.add_argument("--quick-start-ja", required=True, type=Path)
     parser.add_argument("--feedback-ja", type=Path)
@@ -1421,25 +1711,67 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Assemble exactly one fresh final bundle from explicit input files."""
     arguments = _parser().parse_args(argv)
     try:
-        result = assemble_trial_bundle(
-            output_directory=arguments.output,
-            wheel=arguments.wheel,
-            preliminary_trial_manifest=arguments.trial_manifest,
-            source_manifest=arguments.source_manifest,
-            staging_manifest=arguments.staging_manifest,
-            constraints_x86_64=arguments.constraints_x86_64,
-            resolution_x86_64=arguments.resolution_x86_64,
-            constraints_aarch64=arguments.constraints_aarch64,
-            resolution_aarch64=arguments.resolution_aarch64,
-            quick_start=arguments.quick_start,
-            quick_start_ja=arguments.quick_start_ja,
-            feedback_ja=arguments.feedback_ja,
-            repository=arguments.repository,
-            build_workflow_path=arguments.build_workflow_path,
-            build_run_id=arguments.build_run_id,
-            build_run_number=arguments.build_run_number,
-            build_run_attempt=arguments.build_run_attempt,
-        )
+        common = {
+            "output_directory": arguments.output,
+            "wheel": arguments.wheel,
+            "preliminary_trial_manifest": arguments.trial_manifest,
+            "source_manifest": arguments.source_manifest,
+            "staging_manifest": arguments.staging_manifest,
+            "quick_start": arguments.quick_start,
+            "quick_start_ja": arguments.quick_start_ja,
+            "repository": arguments.repository,
+            "build_workflow_path": arguments.build_workflow_path,
+            "build_run_id": arguments.build_run_id,
+            "build_run_number": arguments.build_run_number,
+            "build_run_attempt": arguments.build_run_attempt,
+        }
+        if arguments.trial_target is None:
+            required = (
+                arguments.constraints_x86_64,
+                arguments.resolution_x86_64,
+                arguments.constraints_aarch64,
+                arguments.resolution_aarch64,
+            )
+            if any(path is None for path in required):
+                raise TrialBundleError("legacy bundle requires both architectures")
+            result = assemble_trial_bundle(
+                **common,
+                constraints_x86_64=cast(Path, arguments.constraints_x86_64),
+                resolution_x86_64=cast(Path, arguments.resolution_x86_64),
+                constraints_aarch64=cast(Path, arguments.constraints_aarch64),
+                resolution_aarch64=cast(Path, arguments.resolution_aarch64),
+                feedback_ja=arguments.feedback_ja,
+            )
+        else:
+            target = trial_target(arguments.trial_target)
+            path_pairs = {
+                "x86_64": (
+                    arguments.constraints_x86_64,
+                    arguments.resolution_x86_64,
+                ),
+                "aarch64": (
+                    arguments.constraints_aarch64,
+                    arguments.resolution_aarch64,
+                ),
+                "arm64": (arguments.constraints_arm64, arguments.resolution_arm64),
+            }
+            if arguments.feedback_ja is None or any(
+                path is None
+                for architecture in target.architectures
+                for path in path_pairs[architecture]
+            ):
+                raise TrialBundleError(
+                    "platform bundle is missing target architecture evidence"
+                )
+            result = assemble_platform_trial_bundle(
+                **common,
+                architecture_evidence={
+                    architecture: cast(tuple[Path, Path], path_pairs[architecture])
+                    for architecture in target.architectures
+                },
+                feedback_ja=arguments.feedback_ja,
+                trial_target_id=arguments.trial_target,
+            )
     except (OSError, TrialBundleError) as exc:
         print(f"assemble_trial_bundle: error: {exc}", file=sys.stderr)
         return 1
