@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any
@@ -580,33 +580,88 @@ def _select_latest_timeseries_for_crop(
     return object_id
 
 
-def _click_dialog(dialog_type: object, fill: object, action: object) -> None:
-    """Accept an ordinary modal operation dialog through its public controls."""
-    from PySide6.QtCore import Qt, QTimer
-    from PySide6.QtTest import QTest
+def _click_dialog(
+    dialog_type: type[Any],
+    fill: Callable[[Any], None],
+    action: Any,
+    *,
+    timeout_s: float = 15.0,
+) -> None:
+    """Accept one bounded modal operation dialog through its public controls."""
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
-    def accept() -> None:
-        app = QApplication.instance()
-        if not isinstance(app, QApplication):
-            QTimer.singleShot(10, accept)
-            return
-        dialog = app.activeModalWidget()
-        if not isinstance(dialog, dialog_type):  # type: ignore[arg-type]
-            QTimer.singleShot(10, accept)
-            return
-        assert dialog is not None
-        fill(dialog)  # type: ignore[operator]
-        buttons = dialog.findChild(QDialogButtonBox)
-        if buttons is None:
-            raise GateError("technical-gate operation dialog has no buttons")
-        button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        if button is None:
-            raise GateError("technical-gate operation dialog cannot be accepted")
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        raise GateError("technical-gate operation dialog has no application")
+    poll_timer = QTimer()
+    poll_timer.setInterval(10)
+    deadline_timer = QTimer()
+    deadline_timer.setSingleShot(True)
+    handled = [False]
+    failure: list[BaseException] = []
 
-    QTimer.singleShot(0, accept)
-    action.trigger()  # type: ignore[attr-defined]
+    def current_dialog() -> Any | None:
+        active = app.activeModalWidget()
+        if isinstance(active, dialog_type):
+            return active
+        candidates = [
+            widget
+            for widget in app.topLevelWidgets()
+            if isinstance(widget, dialog_type) and widget.isVisible()
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def stop() -> None:
+        poll_timer.stop()
+        deadline_timer.stop()
+
+    def fail(error: BaseException) -> None:
+        if not failure:
+            failure.append(error)
+        stop()
+        dialog = current_dialog()
+        if dialog is not None:
+            dialog.reject()
+
+    def accept() -> None:
+        if handled[0] or failure:
+            return
+        dialog = current_dialog()
+        if dialog is None:
+            return
+        try:
+            fill(dialog)
+            buttons = dialog.findChild(QDialogButtonBox)
+            if buttons is None:
+                raise GateError("technical-gate operation dialog has no buttons")
+            button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+            if button is None:
+                raise GateError("technical-gate operation dialog cannot be accepted")
+            handled[0] = True
+            stop()
+            # A synthetic mouse event may be ignored by Cocoa while a nested
+            # native modal loop is active.  The public button signal is the
+            # deterministic cross-platform acceptance boundary.
+            button.click()
+        except BaseException as exc:
+            fail(exc)
+
+    def expire() -> None:
+        fail(GateError("technical-gate operation dialog timed out"))
+
+    poll_timer.timeout.connect(accept)
+    deadline_timer.timeout.connect(expire)
+    poll_timer.start()
+    deadline_timer.start(max(1, int(timeout_s * 1000)))
+    try:
+        action.trigger()
+    finally:
+        stop()
+    if failure:
+        raise GateError("technical-gate operation dialog failed") from failure[0]
+    if not handled[0]:
+        raise GateError("technical-gate operation dialog did not appear")
 
 
 def _remove_xdg_roots(work_root: Path) -> None:

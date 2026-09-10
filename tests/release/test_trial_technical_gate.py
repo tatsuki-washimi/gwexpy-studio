@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import signal
 import sys
@@ -262,6 +263,17 @@ def test_macos_gate_environment_keeps_native_cocoa_selection(tmp_path: Path) -> 
     )
 
     assert "QT_QPA_PLATFORM" not in environment
+
+
+def test_operation_dialog_acceptance_is_native_safe_and_bounded() -> None:
+    """Cocoa dialogs use a direct button signal and cannot poll forever."""
+    source = inspect.getsource(_gate()._click_dialog)
+
+    assert "button.click()" in source
+    assert "QTest.mouseClick" not in source
+    assert "deadline_timer" in source
+    assert "topLevelWidgets" in source
+    assert "technical-gate operation dialog timed out" in source
 
 
 def test_shared_memory_cleanup_probe_uses_reattach_not_dev_shm() -> None:
