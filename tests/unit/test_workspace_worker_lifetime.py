@@ -370,6 +370,37 @@ def test_parent_guard_reports_kernel_rejection(monkeypatch):
     assert error.value.errno == errno.EPERM
 
 
+@pytest.mark.contract("WSP-0102A")
+def test_parent_guard_exits_darwin_worker_after_parent_death(monkeypatch):
+    from types import SimpleNamespace
+
+    from gwexpy_studio.worker import parent_lifetime
+
+    parent_released = threading.Event()
+    watchdog_exited = threading.Event()
+    exit_codes = []
+
+    def join_parent() -> None:
+        assert parent_released.wait(1)
+
+    monkeypatch.setattr(parent_lifetime.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        multiprocessing,
+        "parent_process",
+        lambda: SimpleNamespace(pid=os.getppid(), join=join_parent),
+    )
+    monkeypatch.setattr(
+        os,
+        "_exit",
+        lambda code: (exit_codes.append(code), watchdog_exited.set()),
+    )
+
+    assert parent_lifetime.guard_parent_lifetime()
+    parent_released.set()
+    assert watchdog_exited.wait(1)
+    assert exit_codes == [1]
+
+
 def _replying_worker(connection):
     from gwexpy_studio.worker.protocol import decode_message, encode_message
 
