@@ -1967,6 +1967,41 @@ def test_resolution_rejects_an_unsafe_gate_descriptor(
         )
 
 
+def test_resolution_reports_the_path_free_gate_stage_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "public-p"
+    work_root = tmp_path / "private-work"
+    sealed_gate = work_root / "installed-trial-technical-gate.py"
+    checkout.mkdir()
+    work_root.mkdir()
+    sealed_gate.write_text("sealed gate\n", encoding="utf-8")
+    (work_root / "technical-gate-stage.json").write_bytes(
+        b'{"phase":"producer","stage":"crop-dialog"}\n'
+    )
+    monkeypatch.setattr(
+        _resolution().subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
+    )
+
+    gate_fd = os.open(sealed_gate, os.O_RDONLY)
+    try:
+        with pytest.raises(
+            _resolution().ResolutionError,
+            match="producer/crop-dialog",
+        ):
+            _resolution().run_installed_technical_gate(
+                python=tmp_path / "phase-two" / "bin" / "python",
+                gate_fd=gate_fd,
+                checkout_root=checkout,
+                work_root=work_root,
+            )
+    finally:
+        os.close(gate_fd)
+
+
 def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
     trial_artifact: tuple[Path, Path, Path, dict[str, str]],
     tmp_path: Path,
