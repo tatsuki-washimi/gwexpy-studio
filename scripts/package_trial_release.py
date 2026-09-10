@@ -15,12 +15,14 @@ from pathlib import Path
 try:
     from . import verify_trial_bundle as _bundle_verifier
     from .assemble_trial_bundle import TrialBundleError, verify_trial_bundle_bytes
+    from .trial_targets import TrialTargetError, trial_target
 except ImportError:  # pragma: no cover
     import verify_trial_bundle as _bundle_verifier  # type: ignore
     from assemble_trial_bundle import (  # type: ignore
         TrialBundleError,
         verify_trial_bundle_bytes,
     )
+    from trial_targets import TrialTargetError, trial_target  # type: ignore[no-redef]
 
 
 class TrialReleaseError(RuntimeError):
@@ -39,8 +41,7 @@ def package_trial_release(
     build = manifest.get("build")
     if not isinstance(build, dict) or not isinstance(build.get("id"), str):
         raise TrialReleaseError("verified bundle has no build ID")
-    build_id = build["id"]
-    root = f"gwexpy-studio-trial-{build_id}"
+    root = _archive_root(manifest)
     output = Path(output_directory)
     if output.exists():
         if not output.is_dir() or any(output.iterdir()):
@@ -51,9 +52,7 @@ def package_trial_release(
     sidecar_path = output / f"{archive_path.name}.sha256"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in sorted(files, key=lambda item: item.encode("utf-8")):
-            info = zipfile.ZipInfo(
-                f"{root}/{name}", date_time=(1980, 1, 1, 0, 0, 0)
-            )
+            info = zipfile.ZipInfo(f"{root}/{name}", date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o644) << 16
             info.compress_type = zipfile.ZIP_STORED
@@ -67,6 +66,14 @@ def package_trial_release(
 
 def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, object]:
     """Verify sidecar, outer archive safety, and delegated internal bytes."""
+    manifest, _archive_bytes = read_verified_trial_release(archive_path, sidecar_path)
+    return manifest
+
+
+def read_verified_trial_release(
+    archive_path: Path, sidecar_path: Path
+) -> tuple[dict[str, object], bytes]:
+    """Return a verified archive byte snapshot and its derived manifest."""
     archive = Path(archive_path)
     sidecar = Path(sidecar_path)
     try:
@@ -74,7 +81,8 @@ def verify_trial_release(archive_path: Path, sidecar_path: Path) -> dict[str, ob
         sidecar_bytes = _read_stable_path(sidecar, "sidecar")
     except OSError as exc:
         raise TrialReleaseError("archive or sidecar is missing") from exc
-    return _verify_release_bytes(archive.name, archive_bytes, sidecar_bytes)
+    manifest = _verify_release_bytes(archive.name, archive_bytes, sidecar_bytes)
+    return manifest, archive_bytes
 
 
 def _verify_release_bytes(
@@ -82,9 +90,7 @@ def _verify_release_bytes(
 ) -> dict[str, object]:
     """Verify one already-captured archive and sidecar byte snapshot."""
     expected_line = (
-        f"{hashlib.sha256(archive_bytes).hexdigest()}  {archive_name}\n".encode(
-            "ascii"
-        )
+        f"{hashlib.sha256(archive_bytes).hexdigest()}  {archive_name}\n".encode("ascii")
     )
     if sidecar_bytes != expected_line:
         raise TrialReleaseError("sidecar digest or filename is incorrect")
@@ -130,10 +136,30 @@ def _verify_release_bytes(
     build = manifest.get("build")
     if not isinstance(build, dict) or not isinstance(build.get("id"), str):
         raise TrialReleaseError("verified bundle has no build ID")
-    expected_root = f"gwexpy-studio-trial-{build['id']}"
+    expected_root = _archive_root(manifest)
     if root != expected_root or archive_name != f"{expected_root}.zip":
         raise TrialReleaseError("archive root or filename does not match build ID")
     return manifest
+
+
+def _archive_root(manifest: dict[str, object]) -> str:
+    """Return the exact schema-bound top-level directory and asset basename."""
+    build = manifest.get("build")
+    if not isinstance(build, dict) or not isinstance(build.get("id"), str):
+        raise TrialReleaseError("verified bundle has no build ID")
+    prefix = "gwexpy-studio-trial"
+    if manifest.get("schema") == 4:
+        target_record = manifest.get("target")
+        if not isinstance(target_record, dict) or not isinstance(
+            target_record.get("id"), str
+        ):
+            raise TrialReleaseError("verified bundle has no target ID")
+        try:
+            target = trial_target(target_record["id"])
+        except TrialTargetError as exc:
+            raise TrialReleaseError("verified bundle target is invalid") from exc
+        prefix = f"{prefix}-{target.id}"
+    return f"{prefix}-{build['id']}"
 
 
 def verify_trial_release_directory(release_directory: Path) -> dict[str, object]:

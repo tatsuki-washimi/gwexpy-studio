@@ -181,9 +181,7 @@ def derive_trial_identity(
     return TrialIdentity(
         source_sha=source_sha,
         build_id=f"P-{short_sha}-{utc_date}-r{run}-a{attempt}",
-        version=(
-            f"{_BASE_VERSION}+trial.p.g{short_sha}.{utc_date}.r{run}.a{attempt}"
-        ),
+        version=(f"{_BASE_VERSION}+trial.p.g{short_sha}.{utc_date}.r{run}.a{attempt}"),
     )
 
 
@@ -446,14 +444,10 @@ def _parse_git_tree_entries(content: bytes) -> tuple[_GitTreeEntry, ...]:
         if re.fullmatch(r"[0-9a-f]{40,64}", object_id) is None:
             raise TrialBuildError("Git tree object ID is malformed")
         if object_type == "tree" and mode == "040000":
-            entries.append(
-                _GitTreeEntry(relative_path, mode, object_type, object_id)
-            )
+            entries.append(_GitTreeEntry(relative_path, mode, object_type, object_id))
             continue
         if object_type == "blob" and mode in {"100644", "100755"}:
-            entries.append(
-                _GitTreeEntry(relative_path, mode, object_type, object_id)
-            )
+            entries.append(_GitTreeEntry(relative_path, mode, object_type, object_id))
             continue
         if object_type == "blob" and mode == "120000":
             raise TrialBuildError("Git tree contains a symbolic link")
@@ -821,29 +815,39 @@ def _rename_no_replace(
     destination_parent: int,
     destination_name: str,
 ) -> None:
-    """Publish through Linux renameat2 without ever replacing an existing output."""
+    """Publish atomically without replacing an existing Linux/macOS output."""
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = libc.renameat2
-    except (AttributeError, OSError) as exc:
-        raise TrialBuildError(
-            "atomic no-replace publication requires Linux renameat2"
-        ) from exc
-    renameat2.argtypes = [
+    except OSError as exc:
+        raise TrialBuildError("atomic no-replace publication is unavailable") from exc
+    flags = 1  # Linux RENAME_NOREPLACE.
+    try:
+        rename = libc.renameat2
+    except AttributeError:
+        if sys.platform != "darwin":
+            raise TrialBuildError("atomic no-replace publication is unavailable")
+        try:
+            rename = libc.renameatx_np
+        except AttributeError as exc:
+            raise TrialBuildError(
+                "atomic no-replace publication is unavailable"
+            ) from exc
+        flags = 0x00000004  # Darwin RENAME_EXCL.
+    rename.argtypes = [
         ctypes.c_int,
         ctypes.c_char_p,
         ctypes.c_int,
         ctypes.c_char_p,
         ctypes.c_uint,
     ]
-    renameat2.restype = ctypes.c_int
+    rename.restype = ctypes.c_int
     if (
-        renameat2(
+        rename(
             source_parent,
             os.fsencode(source_name),
             destination_parent,
             os.fsencode(destination_name),
-            1,  # RENAME_NOREPLACE
+            flags,
         )
         != 0
     ):
@@ -953,10 +957,7 @@ def _directory_open_flags() -> int:
     if directory_flag is None:
         raise TrialBuildError("platform lacks O_DIRECTORY for safe publication")
     return (
-        os.O_RDONLY
-        | directory_flag
-        | _no_follow_flag()
-        | getattr(os, "O_CLOEXEC", 0)
+        os.O_RDONLY | directory_flag | _no_follow_flag() | getattr(os, "O_CLOEXEC", 0)
     )
 
 
@@ -1490,9 +1491,11 @@ def _verify_wheel_record(
                 raise TrialBuildError("trial wheel RECORD self-entry is invalid")
             continue
         content = archive.read(name)
-        expected_digest = base64.urlsafe_b64encode(
-            hashlib.sha256(content).digest()
-        ).rstrip(b"=").decode("ascii")
+        expected_digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(content).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
         if digest != f"sha256={expected_digest}" or size != str(len(content)):
             raise TrialBuildError("trial wheel RECORD does not match its payload")
 
@@ -1514,15 +1517,12 @@ def _verify_trial_wheel_metadata(content: bytes, identity: TrialIdentity) -> Non
         raise TrialBuildError("trial wheel Requires-Python metadata is not approved")
     actual_requirements = tuple(
         sorted(
-            _normalized_requirement(value)
-            for value in headers.get("requires-dist", [])
+            _normalized_requirement(value) for value in headers.get("requires-dist", [])
         )
     )
     if actual_requirements != _expected_trial_requirements():
         raise TrialBuildError("trial wheel Requires-Dist metadata is not approved")
-    if headers.get("provides-extra") != sorted(
-        _TRIAL_PROJECT_OPTIONAL_DEPENDENCIES
-    ):
+    if headers.get("provides-extra") != sorted(_TRIAL_PROJECT_OPTIONAL_DEPENDENCIES):
         raise TrialBuildError("trial wheel Provides-Extra metadata is not approved")
     if headers.get("dynamic") != ["license-file"]:
         raise TrialBuildError("trial wheel Dynamic metadata is not approved")
@@ -1554,16 +1554,16 @@ def _metadata_headers(content: bytes) -> dict[str, list[str]]:
     return headers
 
 
-def _expected_trial_requirements(
-) -> tuple[tuple[str, tuple[tuple[str, str], ...], str], ...]:
+def _expected_trial_requirements() -> tuple[
+    tuple[str, tuple[tuple[str, str], ...], str], ...
+]:
     """Return the complete runtime and optional-dependency policy multiset."""
     requirements = [
         _normalized_requirement(value) for value in _TRIAL_PROJECT_DEPENDENCIES
     ]
     for extra, values in _TRIAL_PROJECT_OPTIONAL_DEPENDENCIES.items():
         requirements.extend(
-            _normalized_requirement(f'{value}; extra == "{extra}"')
-            for value in values
+            _normalized_requirement(f'{value}; extra == "{extra}"') for value in values
         )
     return tuple(sorted(requirements))
 

@@ -95,10 +95,7 @@ def _wheel_metadata(version: str) -> bytes:
         "License-File: LICENSE",
         *(f"Requires-Dist: {value}" for value in _M2_RUNTIME_REQUIREMENTS),
         "Provides-Extra: dev",
-        *(
-            f'Requires-Dist: {value}; extra == "dev"'
-            for value in _M2_DEV_REQUIREMENTS
-        ),
+        *(f'Requires-Dist: {value}; extra == "dev"' for value in _M2_DEV_REQUIREMENTS),
         "Dynamic: license-file",
         "",
     ]
@@ -166,6 +163,26 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
                         "docs/Quick-Start.ja.md", quick_start_ja.read_bytes()
                     ),
                     _manifest_entry("docs/Feedback.ja.md", feedback.read_bytes()),
+                    _manifest_entry(
+                        "docs/trial/macos/Feedback.ja.md", feedback.read_bytes()
+                    ),
+                    _manifest_entry(
+                        "docs/trial/macos/Quick-Start.ja.md",
+                        quick_start_ja.read_bytes(),
+                    ),
+                    _manifest_entry(
+                        "docs/trial/macos/Quick-Start.md", quick_start.read_bytes()
+                    ),
+                    _manifest_entry(
+                        "docs/trial/wsl2/Feedback.ja.md", feedback.read_bytes()
+                    ),
+                    _manifest_entry(
+                        "docs/trial/wsl2/Quick-Start.ja.md",
+                        quick_start_ja.read_bytes(),
+                    ),
+                    _manifest_entry(
+                        "docs/trial/wsl2/Quick-Start.md", quick_start.read_bytes()
+                    ),
                     _manifest_entry(
                         "packaging/trial-io-capabilities.json", capability_policy
                     ),
@@ -656,9 +673,7 @@ def test_verifier_rejects_unstaged_package_member_after_all_bindings_rebound(
     output = tmp_path / "bundle"
     _assemble(inputs, output)
     wheel = output / inputs["wheel"].name
-    _rewrite_wheel_member(
-        wheel, "gwexpy_studio/backdoor.py", b"raise RuntimeError\n"
-    )
+    _rewrite_wheel_member(wheel, "gwexpy_studio/backdoor.py", b"raise RuntimeError\n")
     _rebind_final_bundle_wheel(output, wheel)
 
     with pytest.raises(_bundle().TrialBundleError, match="payload"):
@@ -754,9 +769,10 @@ def test_assemble_rejects_a_policy_not_bound_to_source_manifest(
         ],
         "schema_version": 1,
     }
-    alternate_serialization = json.dumps(
-        policy, ensure_ascii=True, sort_keys=True, indent=2
-    ).encode("utf-8") + b"\n"
+    alternate_serialization = (
+        json.dumps(policy, ensure_ascii=True, sort_keys=True, indent=2).encode("utf-8")
+        + b"\n"
+    )
     _rewrite_wheel_member(
         inputs["wheel"],
         "gwexpy_studio/assets/io-capabilities.json",

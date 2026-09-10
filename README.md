@@ -19,8 +19,9 @@ Download the two release assets with the same base name:
 
 Verify the outer checksum, unpack the ZIP, and follow the bundled Quick Start.
 
-The initial participant trial supports Ubuntu 24.04 x86_64 with a conda Python
-3.12 environment.
+The currently published prerelease is limited to native Ubuntu 24.04 x86_64
+with a conda Python 3.12 environment. It is not qualified for WSL2 or macOS and
+must not be distributed to users of those platforms.
 
 After entering the unpacked directory, the installation path is:
 
@@ -43,6 +44,12 @@ build identity, Quick Starts, and the Japanese feedback form.
 
 Git, a source checkout, an editable install, and PyPI are not part of the
 participant path.
+
+Separate `wsl2-ubuntu24` and `macos15-arm64` prereleases will be published only
+after both WSL2 architectures and Apple Silicon macOS have passed physical
+technical qualification from the same source commit. Their participant guides
+are under [docs/trial](docs/trial), but those guides do not make an unpublished
+target available.
 
 ## First five minutes
 
@@ -74,8 +81,8 @@ The effective capability snapshot is included in path-free diagnostics.
 
 ## Roadmap and source development
 
-[ROADMAP.md](ROADMAP.md) defines the public-source, wheel, Ubuntu, and WSL2
-milestones.
+[ROADMAP.md](ROADMAP.md) defines the public-source, Ubuntu reference, WSL2,
+macOS, and cross-platform human-trial milestones.
 
 The source is [MIT licensed](LICENSE).
 

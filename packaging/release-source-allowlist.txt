@@ -30,6 +30,7 @@ include docs/development.md
 include docs/Quick-Start.md
 include docs/Quick-Start.ja.md
 include docs/Feedback.ja.md
+include docs/trial/**
 include scripts/package_trial_release.py
 include scripts/verify_trial_release.py
 include docs/release/**
@@ -54,6 +55,12 @@ include scripts/capture_trial_resolution.py
 include scripts/run_trial_technical_gate.py
 include scripts/assemble_trial_bundle.py
 include scripts/verify_trial_bundle.py
+include scripts/trial_targets.py
+include scripts/verify_platform_qualification.py
+include scripts/run_platform_qualification.py
+include scripts/build_qualification_kit.py
+include scripts/evaluate_human_trial.py
+include scripts/verify_trial_seed.py
 include scripts/extract_trial_artifact.py
 exclude scripts/capture_alpha_trial.py
 exclude scripts/build_appimage.py

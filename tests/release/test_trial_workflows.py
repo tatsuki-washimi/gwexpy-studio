@@ -74,9 +74,7 @@ def test_quick_start_stops_before_unzip_on_outer_checksum_failure(
     fake_bin = _write_fake_unzip(tmp_path, ': > "$UNZIP_MARKER"')
     block = _quick_start_download_block(name)
 
-    completed = _run_download_block(
-        tmp_path, block, fake_bin, UNZIP_MARKER=str(marker)
-    )
+    completed = _run_download_block(tmp_path, block, fake_bin, UNZIP_MARKER=str(marker))
 
     assert completed.returncode != 0
     assert not marker.exists()
@@ -185,6 +183,9 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
 
     assert "workflow_dispatch:" in workflow
     assert "source_sha:" in workflow
+    assert "trial_target:" in workflow
+    assert "wsl2-ubuntu24" in workflow
+    assert "macos15-arm64" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert (
         "permissions:\n  contents: read\n\nenv:\n"
@@ -196,7 +197,9 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "cancel-in-progress: false" in workflow
     assert "timeout-minutes:" in workflow
     assert "runs-on: ubuntu-24.04" in workflow
-    assert "runs-on: ubuntu-24.04-arm" in workflow
+    assert "runner: ubuntu-24.04-arm" in workflow
+    assert "runs-on: macos-15" in workflow
+    assert "macos-latest" not in workflow
     assert CHECKOUT in workflow
     assert DOWNLOAD in workflow
     assert UPLOAD in workflow
@@ -206,6 +209,7 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "github.run_number" in workflow
     assert "github.run_attempt" in workflow
     assert "scripts/build_trial_wheel.py" in workflow
+    assert workflow.count("scripts/verify_trial_seed.py") == 4
     assert "scripts/capture_trial_resolution.py" in workflow
     assert "scripts/assemble_trial_bundle.py" in workflow
     assert "scripts/verify_trial_bundle.py" in workflow
@@ -214,23 +218,27 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert '--bundle "$RUNNER_TEMP/trial-bundle"' in workflow
     assert '--output "$RUNNER_TEMP/trial-release"' in workflow
     assert '--release-directory "$RUNNER_TEMP/trial-release"' in workflow
-    assert workflow.count("- name: Install Qt GL runtime") == 2
+    assert workflow.count("- name: Install Qt GL runtime") == 1
     assert (
         workflow.count("sudo apt-get install --no-install-recommends -y libegl1 libgl1")
-        == 2
+        == 1
     )
     assert workflow.index("Install Qt GL runtime") < workflow.index(
-        "Create the x86_64 resolver environment"
+        "Resolve, reinstall, and qualify the native closure"
     )
-    assert workflow.rindex("Install Qt GL runtime") < workflow.index(
-        "Create the aarch64 resolver environment"
+    assert (
+        "trial-seed-${{ inputs.trial_target }}-${{ github.run_id }}"
+        "-a${{ github.run_attempt }}" in workflow
     )
-    assert "trial-seed-${{ github.run_id }}-a${{ github.run_attempt }}" in workflow
-    assert "trial-bundle-${{ github.run_id }}-a${{ github.run_attempt }}" in workflow
+    assert (
+        "trial-bundle-${{ inputs.trial_target }}-${{ github.run_id }}"
+        "-a${{ github.run_attempt }}" in workflow
+    )
     assert "needs: prepare" in workflow
-    assert "needs: [qualify-x86_64, qualify-aarch64]" in workflow
-    assert workflow.count("load_trial_artifact") >= 3
+    assert "needs: [prepare, qualify-linux, qualify-macos]" in workflow
     assert workflow.count("git rev-parse --verify HEAD") >= 4
+    assert "scripts/build_qualification_kit.py" in workflow
+    assert "trial-qualification-kit-${{ inputs.trial_target }}" in workflow
     upload_start = workflow.index("- name: Upload the participant release archive")
     upload_block = workflow[upload_start:]
     assert "path: ${{ runner.temp }}/trial-release/*" in upload_block
@@ -243,6 +251,7 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> N
 
     assert "workflow_dispatch:" in workflow
     assert "build_run_id:" in workflow
+    assert "qualification_summary_sha256:" in workflow
     assert "permissions:\n  actions: read\n  contents: read" in workflow
     assert (
         "permissions:\n  actions: read\n  contents: read\n\nenv:\n"
@@ -259,9 +268,10 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> N
     assert CHECKOUT in workflow
     assert DOWNLOAD not in workflow
     assert "build-trial-wheel.yml" in workflow
-    assert workflow.count(
-        'run.get("path") != ".github/workflows/build-trial-wheel.yml"'
-    ) == 2
+    assert (
+        workflow.count('run.get("path") != ".github/workflows/build-trial-wheel.yml"')
+        == 2
+    )
     assert '".github/workflows/build-trial-wheel.yml@" + default_branch' not in workflow
     assert "conclusion" in workflow
     assert "head_sha" in workflow
@@ -274,15 +284,16 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> N
     assert workflow.count('--expected-digest "$ARTIFACT_DIGEST"') == 2
     assert "git/matching-refs/tags/" in workflow
     assert "verify_trial_bundle.py" not in workflow
-    assert workflow.count("scripts/verify_trial_release.py") == 2
-    assert workflow.count(
-        '--release-directory "$RUNNER_TEMP/trial-release"'
-    ) == 2
-    assert workflow.count(
-        "from scripts.package_trial_release import verify_trial_release_directory"
-    ) == 2
-    assert "trial-0.1.0a1-p." in workflow
-    assert "v0.1.0a1" in workflow
+    assert workflow.count("scripts/verify_trial_release.py") == 3
+    assert workflow.count('--release-directory "$RUNNER_TEMP/trial-release"') == 2
+    assert (
+        workflow.count(
+            "from scripts.package_trial_release import verify_trial_release_directory"
+        )
+        == 2
+    )
+    assert "trial-{target_id}-0.1.0a1-p." in workflow
+    assert "QUALIFICATION_SUMMARY_SHA256" in workflow
     assert "gh release create" in workflow
     assert "--prerelease" in workflow
     assert "--verify-tag" in workflow
@@ -305,20 +316,20 @@ def test_publish_trial_workflow_releases_and_rechecks_exactly_two_outer_assets()
     release_end = workflow.index("\n\n      - name:", release_start)
     release_block = workflow[release_start:release_end]
     post_publish_start = workflow.index(
-        "- name: Verify the release still names the tag at P"
+        "- name: Verify tag, release state, assets, and downloaded bytes"
     )
     post_publish_block = workflow[post_publish_start:]
 
-    assert 'output.write(f"archive_filename={archive.name}\\n")' in workflow
-    assert 'output.write(f"sidecar_filename={sidecar.name}\\n")' in workflow
+    assert "archive_filename={archive.name}" in workflow
+    assert "sidecar_filename={sidecar.name}" in workflow
     assert '"$RELEASE_DIRECTORY/$ARCHIVE_FILENAME"' in release_block
     assert '"$RELEASE_DIRECTORY/$SIDECAR_FILENAME"' in release_block
     assert "constraints-ubuntu24-x86_64.txt" not in release_block
     assert "TRIAL-MANIFEST.json" not in release_block
     assert 'rest_release.get("assets")' in post_publish_block
     assert "expected_assets = {" in post_publish_block
-    assert 'f"gwexpy-studio-trial-{sys.argv[6]}.zip"' in post_publish_block
-    assert 'f"gwexpy-studio-trial-{sys.argv[6]}.zip.sha256"' in post_publish_block
+    assert "{sys.argv[6], sys.argv[7]}" in post_publish_block
+    assert 'gh release download "$TAG"' in post_publish_block
 
 
 def test_publish_trial_workflow_keeps_trial_prereleases_non_latest() -> None:
@@ -329,7 +340,7 @@ def test_publish_trial_workflow_keeps_trial_prereleases_non_latest() -> None:
     release_end = workflow.index("\n\n      - name:", release_start)
     release_block = workflow[release_start:release_end]
     post_publish_start = workflow.index(
-        "- name: Verify the release still names the tag at P"
+        "- name: Verify tag, release state, assets, and downloaded bytes"
     )
     post_publish_block = workflow[post_publish_start:]
     validation_start = workflow.index("gh api graphql", post_publish_start)
@@ -377,15 +388,13 @@ def test_public_ci_installs_the_qt_gl_runtime_libraries() -> None:
 def test_trial_documents_start_from_the_two_release_assets() -> None:
     """Participant documentation begins at the shared prerelease, not source."""
     english_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    japanese_readme = (REPOSITORY_ROOT / "README.ja.md").read_text(
-        encoding="utf-8"
-    )
+    japanese_readme = (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8")
     english_quick_start = (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(
         encoding="utf-8"
     )
-    japanese_quick_start = (
-        REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md"
-    ).read_text(encoding="utf-8")
+    japanese_quick_start = (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(
+        encoding="utf-8"
+    )
 
     assert "being prepared" not in english_readme
     assert "There is no public trial wheel" not in english_readme
@@ -429,12 +438,8 @@ def test_trial_participant_commands_isolate_python_user_paths() -> None:
     documents = (
         (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"),
         (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8"),
-        (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(
-            encoding="utf-8"
-        ),
-        (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(
-            encoding="utf-8"
-        ),
+        (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(encoding="utf-8"),
+        (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(encoding="utf-8"),
     )
 
     for document in documents:
@@ -462,3 +467,60 @@ def test_trial_readiness_defines_the_archive_and_manual_approval_contract() -> N
     assert "manual workflow dispatch" in readiness
     assert "Require at least one reviewer" not in readiness
     assert "prevention of self-review" not in readiness
+
+
+def test_platform_trial_documents_match_distribution_and_human_gate() -> None:
+    documents = {
+        target: {
+            name: (REPOSITORY_ROOT / "docs" / "trial" / directory / name).read_text(
+                encoding="utf-8"
+            )
+            for name in ("Quick-Start.md", "Quick-Start.ja.md", "Feedback.ja.md")
+        }
+        for target, directory in (
+            ("wsl2-ubuntu24", "wsl2"),
+            ("macos15-arm64", "macos"),
+        )
+    }
+
+    for target, target_documents in documents.items():
+        for document in target_documents.values():
+            assert target in document
+            assert "--only-binary=:all:" in document
+            assert "Build ID" in document
+        for quick_start in (
+            target_documents["Quick-Start.md"],
+            target_documents["Quick-Start.ja.md"],
+        ):
+            assert "PYTHONNOUSERSITE=1" in quick_start
+            assert "unset PYTHONPATH" in quick_start
+            assert "Save" in quick_start
+            assert "Close" in quick_start
+            assert "Open" in quick_start
+    assert "constraints-ubuntu24-" in documents["wsl2-ubuntu24"]["Quick-Start.md"]
+    assert "libEGL.so.1" in documents["wsl2-ubuntu24"]["Quick-Start.md"]
+    assert (
+        "constraints-macos15-arm64.txt" in documents["macos15-arm64"]["Quick-Start.md"]
+    )
+    assert "libEGL.so.1" not in documents["macos15-arm64"]["Quick-Start.md"]
+
+    evidence = (
+        REPOSITORY_ROOT / "docs" / "trial" / "Human-Trial-Evidence.md"
+    ).read_text(encoding="utf-8")
+    assert "N >= 3" in evidence
+    assert "ceil(2N / 3)" in evidence
+    assert "WSL2参加者" in evidence
+    assert "macOS参加者" in evidence
+    assert "Issue ID" in evidence
+    assert "root cause ID" in evidence
+    assert "Save → Close → Open" in evidence
+
+
+def test_project_metadata_is_not_linux_only() -> None:
+    metadata = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert (
+        'description = "Desktop application for GWexpy scientific analysis."'
+        in metadata
+    )
+    assert "Linux desktop application" not in metadata

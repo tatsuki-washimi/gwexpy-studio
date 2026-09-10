@@ -256,6 +256,18 @@ def test_gate_environment_isolated_and_result_is_bounded_path_free(
     }
 
 
+def test_macos_gate_environment_keeps_native_cocoa_selection(tmp_path: Path) -> None:
+    environment = _gate().gate_environment(
+        tmp_path, {"QT_QPA_PLATFORM": "forged"}, "trialgate-", native_qt=True
+    )
+
+    assert "QT_QPA_PLATFORM" not in environment
+
+
+def test_shared_memory_cleanup_probe_uses_reattach_not_dev_shm() -> None:
+    assert _gate().shared_memory_cleanup_probe("trialgate-") is True
+
+
 def test_gate_result_reader_requires_the_exact_bounded_success_schema() -> None:
     """The resolver accepts only a complete, internally consistent gate record."""
     checks = {name: True for name in _gate()._CHECK_NAMES}
@@ -323,13 +335,18 @@ def test_external_recovery_gate_runs_a_crashing_producer_then_a_fresh_consumer(
     def fake_run(command: Sequence[str], **kwargs: object) -> SimpleNamespace:
         values: tuple[str, ...] = tuple(command)
         seen.append(values)
+        if "--phase" not in values:
+            assert values == (str(phase_python), str(work_root / "python-export.py"))
+            assert "pass_fds" not in kwargs
+            return SimpleNamespace(returncode=0)
         assert kwargs["pass_fds"] == (gate_fd,)
         phase = values[values.index("--phase") + 1]
         if phase == "producer":
             (work_root / "trial.gwxproj").write_text("saved", encoding="utf-8")
-        return SimpleNamespace(
-            returncode=-signal.SIGKILL if phase == "producer" else 0
-        )
+            (work_root / "python-export.py").write_text(
+                "print('export')\n", encoding="utf-8"
+            )
+        return SimpleNamespace(returncode=-signal.SIGKILL if phase == "producer" else 0)
 
     monkeypatch.setattr(
         _gate(), "subprocess", SimpleNamespace(run=fake_run), raising=False
@@ -344,15 +361,20 @@ def test_external_recovery_gate_runs_a_crashing_producer_then_a_fresh_consumer(
         work_root=work_root,
     )
 
-    assert [command[command.index("--phase") + 1] for command in seen] == [
+    phase_commands = [command for command in seen if "--phase" in command]
+    assert [command[command.index("--phase") + 1] for command in phase_commands] == [
         "producer",
         "consumer",
     ]
-    assert all(command[:3] == (str(phase_python), "-I", "-c") for command in seen)
-    assert all(command[3] == _gate()._SEALED_GATE_BOOTSTRAP for command in seen)
-    assert all(command[4] == str(gate_fd) for command in seen)
-    assert "--project" not in seen[0]
-    assert seen[1][seen[1].index("--project") + 1] == str(
+    assert all(
+        command[:3] == (str(phase_python), "-I", "-c") for command in phase_commands
+    )
+    assert all(
+        command[3] == _gate()._SEALED_GATE_BOOTSTRAP for command in phase_commands
+    )
+    assert all(command[4] == str(gate_fd) for command in phase_commands)
+    assert "--project" not in phase_commands[0]
+    assert phase_commands[1][phase_commands[1].index("--project") + 1] == str(
         work_root / "trial.gwxproj"
     )
     assert all(

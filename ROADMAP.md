@@ -1,100 +1,80 @@
 # GWexpy Studio ロードマップ
 
-GWexpy Studioは、Python、Jupyter、GWpy、GWexpyに不慣れな利用者がGUIから解析に触れ、徐々にPython APIへ進めることを目指します。
-
-もう一つの目的は、測定直後などにprogramを書かずにデータをすばやく確認し、基本解析を行えることです。
-
-最初の利用者は、condaやpipは使えるがGitやsoftware developmentには慣れていない物理系の研究者と学生です。
-
-そのため、最初の配布はGit不要のcondaとpipによるtrial wheelとします。
-
-AppImage、DMG、native Windows installerは、その導線を実利用者で検証した後に進めます。
+GWexpy Studioは、Python、Jupyter、GWpy、GWexpyに不慣れな研究者や学生が、
+Gitを使わずGUIから解析を始められることを目指します。最初の配布形式はconda
+Python 3.12へ導入するtrial wheelです。
 
 ## 現在地
 
-private developmentでは、GUI基本操作、GWexpy native I/O、arithmetic、filter、PSD、CSD、coherence、transfer function、Bode表示、project save/reopen、scientific Undo/Redo、view Undo/Redo、crash recovery、provenance、Python exportを実装しています。
+M1 public sourceとM2 native Ubuntu trial wheelは完了しています。現在公開済みの
+ReleaseはUbuntu 24.04 x86_64のreference validation成果であり、WSL2とmacOSへは
+配布しません。
 
-最初の一般利用者向け配布とhuman trialはまだ実施していません。
+trial build/publish workflowはM1 public sourceに含め、M2で初回buildとqualificationを
+実行しました。次はplatform別配布契約を同じpublic sourceへ追加します。
 
-## M1からM4
+## Milestone
 
 | Milestone | 完了条件 |
 | --- | --- |
-| M1 Public Source | public commit `P`のcanonical manifestが承認済みsnapshot `S/M`と一致し、public sourceだけでbuild/testできる。 |
-| M2 Trial Wheel | 同じStudio wheelをLinux x86_64とaarch64の固定runtime closureでinstallし、core workflowをtechnical qualificationできる。 |
-| M3 Ubuntu Trial | Ubuntu 24.04 x86_64で、開発者以外の3人がGitなしの導入と5分workflowを試す。 |
-| M4 WSL2 Trial | Windows 11上のx86_64 WSL2とARM64 WSL2を実機qualificationし、両architectureを含む3人が試す。 |
+| M1 Public Source | public commit `P`のcanonical manifestが承認済みsnapshotと一致し、public sourceだけでbuildとtestができる。 |
+| M2 Native Ubuntu Build | Ubuntu 24.04 x86_64 reference端末でwheel、checksum、GUI workflow、project/recovery、Build IDを検証する。 |
+| M3 Platform Contract | WSL2とmacOSのschema 4 artifact、verifier、qualification kit、workflow、文書を同じ`P`へ統合する。 |
+| M4 Technical Qualification | Windows 11 x86_64/ARM64のWSL2/WSLgとApple Silicon macOS 15以上の3構成が、同じ`P`から作った候補ですべて成功する。 |
+| M5 Cross-platform Human Trial | WSL2利用者2名以上、Mac利用者1名以上を含む未経験者3名以上が一度だけ共通gateを試す。 |
+| M6 Trial Feedback | P0/P1を修正し、必要なら新しい`P`、artifact、qualification、未経験者groupで再試験する。 |
 
-### M1 Public Source
+## Platform artifact
 
-private release candidateからpublicに出せるcanonical snapshot `S`を作ります。
+Build workflowは`wsl2-ubuntu24`と`macos15-arm64`を別runで作ります。各Releaseは
+target名を含むZIPとsidecarの2assetだけを持ちます。schema 4 manifestはtarget、
+architecture、constraints、resolution、platform別Quick StartとFeedbackを結びます。
+既存Ubuntu artifactのschema 3はread-only互換として検証を継続します。
 
-source identityはGit commit historyではなく、path、portable mode、content hashのmanifestで定義します。
+WSL2版はUbuntu 24.04 x86_64/aarch64のconstraintsを収録します。macOS版はApple
+Silicon arm64とmacOS 15以上に限定します。DMG、署名、notarization、native Windows
+installerはこの段階に含めません。
 
-public commit `P`は、local `.git`だけを除外して`manifest(S) == manifest(P)`を満たす必要があります。
+## Technical qualification
 
-public snapshotにはproduct source、public tests、fixtures、schemas、assets、packaging metadata、source identity tooling、docs、CIを含めます。
+端末所有者は非公開のqualification kitを展開し、1 commandだけを実行します。
+kitは一時conda prefixとstateを作り、binary-only install、native Qt、OpenGL、
+clipboard、path、sample workflow、Save → Close → Open、recovery、worker exit、
+shared-memory cleanup、Python export、About Build IDを自動検証します。
 
-trial wheelのbuild/publish workflowはM1 public sourceに含め、M2で初回buildとqualificationを実行します。
+WSL2ではWindows hostとUbuntu guestのarchitecture、WSL kernel、WSLg、Linux側と
+Windows側の日本語・空白入りpathも検証します。macOSではCocoa Qt pluginとnative
+file-dialog code pathを検証します。実際のfile pickerの操作性はhuman trialで確認します。
 
-private audit evidence、internal note、private workflow data、harness、local build productは含めません。
+3件のevidenceはpath、username、hostnameを含まないcanonical JSONとし、同じsource
+commitであることを一つの`QUALIFICATION-SUMMARY.json`へ結びます。一件でも失敗した
+場合はどちらのplatform Releaseも公開しません。
 
-### M2 Trial Wheel
+## Human trial
 
-trial wheelはpure Python artifactとして一度だけbuildします。
+両platformのtechnical qualificationとprerelease公開が完了した後、初めて手動操作する
+参加者へ同時に依頼します。条件は次のとおりです。
 
-x86_64とaarch64では、architecture別にruntime dependency closureを固定して検証します。
+```text
+参加者:                      N >= 3
+WSL2参加者:                  2名以上
+macOS参加者:                 1名以上
+初回の手動操作:              N / N
+Install unassisted:          N / N
+Launch unassisted:           N / N
+Workflow <= 5 min:           ceil(2N / 3)名以上
+Save → Close → Open:         N / N
+P0:                          0件
+Project / Recovery P1:       0件
+同一root causeのP1が2名以上: No
+```
 
-trial assetにはwheel、architecture別constraints、resolution report、source manifest、trial manifest、checksum、Quick Startを含めます。
+環境作成・導入時間とWelcome表示後のWorkflow時間を分けます。Review/Restoreは表示
+されなかったことをfailureにせず、表示された場合の継続可否を記録します。P0/P1は
+参加者ではなく試験側が分類します。
 
-wheelはclean environmentでinstallでき、source tree外から`gwexpy-studio`を起動できなければなりません。
+## 後続配布
 
-Welcome、Try Sample、Crop、ASD、project save/reopen、recovery、worker cleanupが両architectureのblocking gateです。
-
-Build workflowは`contents: read`だけを持ちます。
-
-Publish workflowは`actions: read`と`contents: write`に分離し、protected environmentのhuman approval後にGitHub prereleaseを作ります。
-
-publish時はdefault branch HEADが`P`であることをapproval前後に確認します。
-
-### M3 Ubuntu 24.04 Trial
-
-reference machineでtechnical qualificationを行った後、開発者以外の3人にtrial wheelを配ります。
-
-conda environment作成とinstall/launchは3人全員が説明なしで完了する必要があります。
-
-Welcome表示後の5分workflowは、3人中2人以上の完了を条件にします。
-
-P0 issueとproject/recoveryに関するP1 issueは残せません。
-
-同じP1 issueが2人以上に起きた時点でtrialを止め、修正します。
-
-### M4 Windows 11、WSL2、WSLg Trial
-
-Windows 11 x86_64上のUbuntu 24.04 x86_64と、Windows 11 ARM64上のUbuntu 24.04 aarch64を別々にtechnical qualificationします。
-
-WSLg、display scaling、clipboard、worker lifecycle、shared memory、`/mnt/c`、日本語path、spaceを含むpath、save/reopen、recovery、Python exportを確認します。
-
-human trialは3人合計とし、x86_64とARM64をそれぞれ少なくとも1人含めます。
-
-ARM ChromebookはLinux aarch64の補助smoke testです。
-
-macOSはM6以降にApple Siliconを優先して外部testerが確認します。
-
-## M5以降
-
-M5ではUbuntuとWSL2のfeedbackをinstallation、UX、scientific workflowに分類して修正します。
-
-必要性が高ければ、HistoryのParameters、Result、Show Pythonを優先します。
-
-M6ではDebian 13とmacOSをwheelとcondaでtechnical trialします。
-
-M7では、M3とM4のhuman trial、clean wheel install、project/recovery、Quick Start、build identityが揃った時点でPyPI alphaを検討します。
-
-M8ではtrial feedbackに基づき、AppImage、standalone directory、`.deb`、`.app`、DMG、native Windows distributionを優先度順に進めます。
-
-その後はShow Python、before/after比較、overlay、Preview/Apply、mouse crop、CSV/HDF5 onboarding、multi-channel analysis、plot styling、Marimo export、portable projectを強化します。
-
-## 最初の成功条件
-
-Gitを知らない研究者または学生が、condaとpipだけでStudioを起動し、5分以内にデータを見て基本解析を行い、作業を保存できることを最初の成功条件とします。
+human trial後にPyPI alphaを検討します。AppImage、standalone directory、`.deb`、
+`.app`、DMG、native Windows distributionはfeedbackと利用者構成を基に優先順位を
+決めます。

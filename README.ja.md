@@ -17,7 +17,9 @@ PythonやJupyterに慣れていない研究者と学生が、Gitを使わずに�
 
 外側のchecksumを確認し、ZIPを展開して、同梱したQuick Startに従います。
 
-初回の試験対象は、conda Python 3.12を使うUbuntu 24.04 x86_64です。
+現在公開済みのprereleaseは、conda Python 3.12を使うnative Ubuntu 24.04
+x86_64専用です。WSL2とmacOSでは未qualificationであり、それらの利用者へは
+配布しません。
 
 展開先のディレクトリへ移動した後の導入経路は次のとおりです。
 
@@ -37,6 +39,12 @@ gwexpy-studio
 ZIPにはwheel、architecture別のqualification記録、checksum、build identity、日英のQuick Start、`Feedback.ja.md`を収録します。
 
 試用者向けの経路にGit、source checkout、editable install、PyPIは含めません。
+
+`wsl2-ubuntu24`版と`macos15-arm64`版は、同じsource commitから作った候補が
+WSL2の両architectureとApple Silicon macOSの実機technical qualificationを
+すべて通過した後にだけ、別々のprereleaseとして公開します。参加者向け手順は
+[docs/trial](docs/trial)にありますが、この文書の存在は未公開targetの利用開始を
+意味しません。
 
 ## 最初の5分
 
@@ -68,7 +76,8 @@ effective capability snapshotは、pathを含まないDiagnosticsに記録しま
 
 ## ロードマップとsource開発
 
-[ROADMAP.md](ROADMAP.md)に、public source、wheel、Ubuntu、WSL2のmilestoneを記載しています。
+[ROADMAP.md](ROADMAP.md)に、public source、Ubuntu reference、WSL2、macOS、
+platform横断human trialのmilestoneを記載しています。
 
 source codeは[MIT license](LICENSE)です。
 

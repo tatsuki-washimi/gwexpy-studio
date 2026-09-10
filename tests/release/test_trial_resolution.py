@@ -70,6 +70,123 @@ def _gate():
     return importlib.import_module("scripts.run_trial_technical_gate")
 
 
+def test_macos_resolution_platform_adapter_is_native_and_path_free() -> None:
+    module = _resolution()
+
+    record = module.macos_platform_record(
+        machine="arm64",
+        os_version="15.7.1",
+        qt_platform="cocoa",
+        qt_version="6.11.2",
+        opengl_context=True,
+    )
+
+    assert record == {
+        "architecture": "arm64",
+        "id": "macos",
+        "qt_opengl_context": True,
+        "qt_platform": "cocoa",
+        "qt_version": "6.11.2",
+        "version": "15.7.1",
+    }
+    assert module._constraints_filename("arm64", "macos15-arm64") == (
+        "constraints-macos15-arm64.txt"
+    )
+    assert module._resolution_filename("arm64", "macos15-arm64") == (
+        "resolution-macos15-arm64.json"
+    )
+
+
+@pytest.mark.parametrize(
+    ("machine", "version", "qt_platform"),
+    [
+        ("x86_64", "15.7.1", "cocoa"),
+        ("arm64", "14.7.1", "cocoa"),
+        ("arm64", "15.7.1", "offscreen"),
+    ],
+)
+def test_macos_resolution_platform_adapter_rejects_wrong_host(
+    machine: str, version: str, qt_platform: str
+) -> None:
+    with pytest.raises(_resolution().ResolutionError):
+        _resolution().macos_platform_record(
+            machine=machine,
+            os_version=version,
+            qt_platform=qt_platform,
+            qt_version="6.11.2",
+            opengl_context=True,
+        )
+
+
+def test_macos_resolution_projection_uses_schema3_without_linux_runtime(
+    trial_artifact: tuple[Path, Path, Path, dict[str, str]],
+) -> None:
+    wheel, trial_manifest, source_manifest, _identity = trial_artifact
+    artifact = _resolution().load_trial_artifact(
+        wheel=wheel,
+        trial_manifest=trial_manifest,
+        source_manifest=source_manifest,
+    )
+    report = {
+        "install": [
+            {
+                "download_info": {
+                    "archive_info": {"hashes": {"sha256": artifact.wheel_sha256}},
+                    "url": f"file://{wheel}",
+                },
+                "is_direct": True,
+                "is_yanked": False,
+                "metadata": {"name": "gwexpy-studio", "version": artifact.version},
+            }
+        ],
+        "pip_version": "25.3",
+        "version": "1",
+    }
+    inspect = {
+        "installed": [
+            {"metadata": {"name": "gwexpy-studio", "version": artifact.version}}
+        ],
+        "pip_version": "25.3",
+        "version": "1",
+    }
+    gate = {
+        "architecture": "arm64",
+        "checks": {name: True for name in _gate()._CHECK_NAMES},
+        "installed": {
+            "build_id": artifact.build_id,
+            "source_sha": artifact.source_sha,
+            "version": artifact.version,
+        },
+        "python_version": "3.12.12",
+        "schema": 2,
+        "status": "passed",
+    }
+
+    projection = _resolution().build_macos_resolution_projection(
+        artifact=artifact,
+        platform_record=_resolution().macos_platform_record(
+            machine="arm64",
+            os_version="15.7.1",
+            qt_platform="cocoa",
+            qt_version="6.11.2",
+            opengl_context=True,
+        ),
+        python_version="3.12.12",
+        pip_version="25.3",
+        phase_one_report=report,
+        phase_one_inspect=inspect,
+        phase_two_report=report,
+        phase_two_inspect=inspect,
+        technical_gate=gate,
+    )
+
+    assert projection["schema"] == 3
+    assert projection["architecture"] == "arm64"
+    assert projection["platform"]["qt_platform"] == "cocoa"
+    assert "glibc_version" not in projection
+    assert "os_runtime" not in projection
+
+
 def _os_runtime(machine: str = "x86_64") -> dict[str, object]:
     """Return the direct, path-free Qt GL runtime record for a fixture host."""
     architecture = {"x86_64": "amd64", "aarch64": "arm64"}[machine]
@@ -123,10 +240,7 @@ def _wheel_metadata(version: str) -> bytes:
         "License-File: LICENSE",
         *(f"Requires-Dist: {value}" for value in _M2_RUNTIME_REQUIREMENTS),
         "Provides-Extra: dev",
-        *(
-            f'Requires-Dist: {value}; extra == "dev"'
-            for value in _M2_DEV_REQUIREMENTS
-        ),
+        *(f'Requires-Dist: {value}; extra == "dev"' for value in _M2_DEV_REQUIREMENTS),
         "Dynamic: license-file",
         "",
     ]
@@ -487,9 +601,7 @@ def trial_artifact(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
         "gwexpy_studio-0.1.0a1+trial.p.gabcdef0.20260907.r1.a1-py3-none-any.whl"
     )
     _write_installable_trial_wheel(wheel, identity)
-    entries = {
-        entry.path: entry for entry in read_manifest(source_manifest).entries
-    }
+    entries = {entry.path: entry for entry in read_manifest(source_manifest).entries}
     with zipfile.ZipFile(wheel) as archive:
         for entry, member in zip(
             _generated_files(wheel),
@@ -1476,9 +1588,7 @@ def test_resolution_rejects_an_unstaged_package_member_before_install(
 ) -> None:
     """Resolver evidence cannot authorize code absent from the staged source tree."""
     wheel, trial_manifest, source_manifest, _identity = trial_artifact
-    _rewrite_wheel_member(
-        wheel, "gwexpy_studio/backdoor.py", b"raise RuntimeError\n"
-    )
+    _rewrite_wheel_member(wheel, "gwexpy_studio/backdoor.py", b"raise RuntimeError\n")
     _refresh_trial_manifest_wheel_binding(trial_manifest, wheel)
 
     with pytest.raises(_resolution().ResolutionError, match="payload"):
@@ -1905,9 +2015,7 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
     runtime_artifacts = document["runtime_artifacts"]
     assert isinstance(runtime_artifacts, list)
     assert runtime_artifacts
-    assert {
-        artifact["name"] for artifact in runtime_artifacts
-    } >= {
+    assert {artifact["name"] for artifact in runtime_artifacts} >= {
         "astropy",
         "gwexpy",
         "gwpy",
