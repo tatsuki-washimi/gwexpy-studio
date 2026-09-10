@@ -38,6 +38,20 @@ def test_gate_qapplication_arguments_use_a_concrete_list() -> None:
     assert arguments == [sys.argv[0]]
 
 
+def test_gate_stage_record_is_canonical_and_path_free(tmp_path: Path) -> None:
+    gate = _gate()
+
+    gate._record_gate_stage(tmp_path, "producer", "crop-dialog")
+
+    stage_path = tmp_path / "technical-gate-stage.json"
+    assert stage_path.read_bytes() == (
+        b'{"phase":"producer","stage":"crop-dialog"}\n'
+    )
+    assert gate.read_gate_stage(tmp_path) == "producer/crop-dialog"
+    with pytest.raises(gate.GateError, match="stage"):
+        gate._record_gate_stage(tmp_path, "producer", "not/a-stage")
+
+
 def test_gate_waits_for_sample_catalog_before_requesting_inspection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -63,6 +63,8 @@ _BUILD_ID = re.compile(r"P-[0-9a-f]{7}-[0-9]{8}-r[1-9][0-9]*-a[1-9][0-9]*")
 _TRIAL_VERSION = re.compile(
     r"0\.1\.0a1\+trial\.p\.g[0-9a-f]{7}\.[0-9]{8}\.r[1-9][0-9]*\.a[1-9][0-9]*"
 )
+_GATE_STAGE_FILENAME = "technical-gate-stage.json"
+_GATE_STAGE_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _SEALED_GATE_BOOTSTRAP = (
     "import os as _os\n"
     "import sys as _sys\n"
@@ -79,6 +81,53 @@ _SEALED_GATE_BOOTSTRAP = (
 def _qapplication_arguments() -> list[str]:
     """Return the concrete argv container accepted by current PySide6 builds."""
     return [sys.argv[0]]
+
+
+def _record_gate_stage(work_root: Path, phase: str, stage: str) -> None:
+    """Persist one bounded, path-free phase marker for failed CI diagnosis."""
+    if (
+        phase not in {"producer", "consumer"}
+        or _GATE_STAGE_TOKEN.fullmatch(stage) is None
+    ):
+        raise GateError("technical-gate diagnostic stage is invalid")
+    path = work_root / _GATE_STAGE_FILENAME
+    if path.is_symlink():
+        raise GateError("technical-gate diagnostic stage path is unsafe")
+    try:
+        path.write_bytes(
+            json.dumps(
+                {"phase": phase, "stage": stage},
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+    except OSError as exc:
+        raise GateError(
+            "technical-gate diagnostic stage could not be recorded"
+        ) from exc
+
+
+def read_gate_stage(work_root: Path) -> str:
+    """Read one strict phase marker without returning host-specific content."""
+    path = work_root / _GATE_STAGE_FILENAME
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise GateError("technical-gate diagnostic stage is unavailable")
+        content = path.read_bytes()
+        document = json.loads(content.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GateError("technical-gate diagnostic stage is invalid") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"phase", "stage"}
+        or document["phase"] not in {"producer", "consumer"}
+        or not isinstance(document["stage"], str)
+        or _GATE_STAGE_TOKEN.fullmatch(document["stage"]) is None
+    ):
+        raise GateError("technical-gate diagnostic stage is invalid")
+    return f"{document['phase']}/{document['stage']}"
 
 
 def verify_installed_module_path(
@@ -675,6 +724,7 @@ def _remove_xdg_roots(work_root: Path) -> None:
 
 def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
     """Create a newer recovery checkpoint, then intentionally kill its launcher."""
+    _record_gate_stage(work_root, "producer", "bootstrap")
     import site
 
     from PySide6.QtCore import Qt, QTimer
@@ -699,6 +749,7 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
 
     def drive() -> None:
         try:
+            _record_gate_stage(work_root, "producer", "launcher")
             app = QApplication.instance()
             if not isinstance(app, QApplication):
                 raise GateError("normal launcher did not create QApplication")
@@ -708,16 +759,19 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
             if len(windows) != 1:
                 raise GateError("normal launcher did not create one main window")
             window = windows[0]
+            _record_gate_stage(work_root, "producer", "welcome")
             _wait(
                 app,
                 lambda: window.isVisible() and window.welcome_panel.isVisible(),
                 "welcome",
             )
+            _record_gate_stage(work_root, "producer", "sample-availability")
             _wait(
                 app,
                 lambda: window.welcome_panel.try_sample_button.isEnabled(),
                 "sample availability",
             )
+            _record_gate_stage(work_root, "producer", "try-sample")
             QTest.mouseClick(
                 window.welcome_panel.try_sample_button, Qt.MouseButton.LeftButton
             )
@@ -725,15 +779,18 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
             panel = window.open_data_panel
             if not isinstance(panel, DataIOPanel):
                 raise GateError("Try Sample did not open data panel")
+            _record_gate_stage(work_root, "producer", "sample-catalog")
             _wait_for_sample_catalog(
                 app=app,
                 window=window,
                 panel=panel,
                 idle_state=BridgeState.IDLE,
             )
+            _record_gate_stage(work_root, "producer", "sample-inspection")
             QTest.mouseClick(panel.inspect_button, Qt.MouseButton.LeftButton)
             _wait(app, lambda: panel.confirm_button.isEnabled(), "sample inspection")
             QTest.mouseClick(panel.confirm_button, Qt.MouseButton.LeftButton)
+            _record_gate_stage(work_root, "producer", "sample-read")
             _wait(
                 app,
                 lambda: (
@@ -747,7 +804,9 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
                 dialog.start_edit.setText("0.125")
                 dialog.end_edit.setText("0.875")
 
+            _record_gate_stage(work_root, "producer", "crop-dialog")
             _click_dialog(CropDialog, crop, window.crop_action)
+            _record_gate_stage(work_root, "producer", "crop")
             _wait(
                 app,
                 lambda: (
@@ -761,7 +820,9 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
                 dialog.fftlength_edit.setText("0.125")
                 dialog.overlap_edit.setText("0.0625")
 
+            _record_gate_stage(work_root, "producer", "asd-dialog")
             _click_dialog(AsdDialog, asd, window.asd_action)
+            _record_gate_stage(work_root, "producer", "asd")
             _wait(
                 app,
                 lambda: (
@@ -771,6 +832,7 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
                 "ASD",
             )
             project = work_root / "trial.gwxproj"
+            _record_gate_stage(work_root, "producer", "save-project")
             if project.exists() or not window.save_project_to(str(project)):
                 raise GateError("Save Project could not start")
             _wait(
@@ -785,12 +847,15 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
                 dialog.start_edit.setText("0.25")
                 dialog.end_edit.setText("0.75")
 
+            _record_gate_stage(work_root, "producer", "post-save-input")
             _select_latest_timeseries_for_crop(
                 app=app,
                 window=window,
                 idle_state=BridgeState.IDLE,
             )
+            _record_gate_stage(work_root, "producer", "post-save-crop-dialog")
             _click_dialog(CropDialog, post_save_crop, window.crop_action)
+            _record_gate_stage(work_root, "producer", "recovery-checkpoint")
             _wait(
                 app,
                 lambda: (
@@ -808,12 +873,14 @@ def _run_producer_launcher(*, checkout: Path, work_root: Path) -> None:
             exported = work_root / "python-export.py"
             if exported.exists():
                 raise GateError("Python export path is not fresh")
+            _record_gate_stage(work_root, "producer", "python-export")
             window.export_to_file(str(exported))
             _wait(
                 app,
                 lambda: window.bridge.state is BridgeState.IDLE and exported.is_file(),
                 "Python export",
             )
+            _record_gate_stage(work_root, "producer", "intentional-crash")
             os.kill(os.getpid(), signal.SIGKILL)
         except BaseException as exc:
             failure.append(exc)
@@ -907,6 +974,7 @@ def _schedule_message_box_button(
 
 def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) -> None:
     """Open a saved project in a fresh launcher and explicitly restore recovery."""
+    _record_gate_stage(work_root, "consumer", "bootstrap")
     import site
 
     from PySide6.QtCore import Qt, QTimer
@@ -929,6 +997,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
 
     def drive() -> None:
         try:
+            _record_gate_stage(work_root, "consumer", "launcher")
             app = QApplication.instance()
             if not isinstance(app, QApplication):
                 raise GateError("normal launcher did not create QApplication")
@@ -938,6 +1007,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
             if len(windows) != 1:
                 raise GateError("normal launcher did not create one main window")
             window = windows[0]
+            _record_gate_stage(work_root, "consumer", "project-reopen")
             _wait(app, lambda: window.isVisible(), "consumer welcome")
             _wait(
                 app,
@@ -953,6 +1023,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 lambda: window.recovery_notice.isVisible(),
                 "recovery notice",
             )
+            _record_gate_stage(work_root, "consumer", "recovery-review")
             restore_message = _schedule_message_box_button(
                 app=app,
                 owner=window,
@@ -982,6 +1053,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
             )
             restore_message.raise_if_failed()
             discard_unsaved_message.raise_if_failed()
+            _record_gate_stage(work_root, "consumer", "data-restore")
             review_message = _schedule_message_box_button(
                 app=app,
                 owner=window,
@@ -1001,6 +1073,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 "reviewed data restore",
             )
             review_message.raise_if_failed()
+            _record_gate_stage(work_root, "consumer", "recovery-consumption")
             window.recoveries_action.trigger()
             _wait(
                 app,
@@ -1013,6 +1086,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
             if app.activeModalWidget() is not None:
                 raise GateError("technical-gate recovery candidate was not consumed")
             restored = work_root / "restored.gwxproj"
+            _record_gate_stage(work_root, "consumer", "restored-project-save")
             if restored.exists() or not window.save_project_to(str(restored)):
                 raise GateError("restored project could not be saved for clean exit")
             _wait(
@@ -1025,6 +1099,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 ),
                 "restored project save",
             )
+            _record_gate_stage(work_root, "consumer", "worker-exit")
             window.close()
             _wait(
                 app,
@@ -1034,6 +1109,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 ),
                 "worker exit",
             )
+            _record_gate_stage(work_root, "consumer", "complete")
         except BaseException as exc:
             failure.append(exc)
             QApplication.quit()

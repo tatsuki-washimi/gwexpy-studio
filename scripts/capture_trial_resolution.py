@@ -83,6 +83,7 @@ try:
     from .run_trial_technical_gate import (
         read_gate_result as _read_gate_result,
     )
+    from .run_trial_technical_gate import read_gate_stage as _read_gate_stage
     from .run_trial_technical_gate import (
         technical_gate_command as _technical_gate_command,
     )
@@ -148,6 +149,9 @@ except ImportError:  # pragma: no cover - direct public-script invocation.
     )
     from run_trial_technical_gate import (  # type: ignore[no-redef]
         read_gate_result as _read_gate_result,
+    )
+    from run_trial_technical_gate import (  # type: ignore[no-redef]
+        read_gate_stage as _read_gate_stage,
     )
     from run_trial_technical_gate import (  # type: ignore[no-redef]
         technical_gate_command as _technical_gate_command,
@@ -395,7 +399,11 @@ def run_installed_technical_gate(
     except (OSError, _GateError) as exc:
         raise ResolutionError("installed technical gate could not run") from exc
     if completed.returncode != 0:
-        raise ResolutionError("installed technical gate failed")
+        try:
+            stage = _read_gate_stage(work_root)
+        except _GateError:
+            raise ResolutionError("installed technical gate failed") from None
+        raise ResolutionError(f"installed technical gate failed at {stage}")
     try:
         result = _read_gate_result(
             _read_regular_bytes(result_path, "technical-gate result")
