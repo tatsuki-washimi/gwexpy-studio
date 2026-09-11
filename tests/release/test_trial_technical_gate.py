@@ -368,6 +368,54 @@ def test_recovery_message_reports_visible_and_selected_boundaries() -> None:
     owner.close()
 
 
+def test_workspace_dialog_binding_drives_message_without_global_discovery() -> None:
+    """The gate binds the actual message passed to a native modal boundary."""
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    from gwexpy_studio.ui import workspace_window
+
+    app = QApplication.instance() or QApplication([])
+    assert isinstance(app, QApplication)
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    cocoa_like_app = SimpleNamespace(
+        activeModalWidget=lambda: None,
+        topLevelWidgets=lambda: [],
+    )
+    logical_window = SimpleNamespace(
+        _modal_active=False,
+        _update_command_state=lambda: None,
+    )
+    boundaries: list[str] = []
+    original_workspace_dialog = workspace_window.workspace_dialog
+    binding = _gate()._install_workspace_message_binding()
+    scheduled = _gate()._schedule_message_box_button(
+        app=cocoa_like_app,
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.2,
+        binding=binding,
+        on_visible=lambda: boundaries.append("visible"),
+        on_selected=lambda: boundaries.append("selected"),
+    )
+
+    try:
+        workspace_window.workspace_dialog(logical_window, dialog.exec)
+    finally:
+        binding.restore()
+
+    assert scheduled.error is None
+    assert scheduled.handled is True
+    assert boundaries == ["visible", "selected"]
+    assert workspace_window.workspace_dialog is original_workspace_dialog
+    dialog.close()
+    owner.close()
+
+
 def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:
     source = inspect.getsource(_gate()._run_consumer_launcher)
 
