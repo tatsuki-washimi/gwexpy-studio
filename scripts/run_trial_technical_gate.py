@@ -907,6 +907,8 @@ def _schedule_message_box_button(
     title: str,
     required: bool,
     timeout_s: float = 15.0,
+    on_visible: Callable[[], None] | None = None,
+    on_selected: Callable[[], None] | None = None,
 ) -> _ScheduledMessageClick:
     """Click a title-bound message button without racing another modal.
 
@@ -965,6 +967,8 @@ def _schedule_message_box_button(
             message = current_message()
             if message is None:
                 return
+            if on_visible is not None:
+                on_visible()
             button = next(
                 (
                     candidate
@@ -979,6 +983,8 @@ def _schedule_message_box_button(
             state.handled = True
             state.stop()
             button.click()
+            if on_selected is not None:
+                on_selected()
         except BaseException as exc:
             fail(exc)
 
@@ -1047,6 +1053,12 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 label="Restore",
                 title="Recover unfinished work",
                 required=True,
+                on_visible=lambda: _record_gate_stage(
+                    work_root, "consumer", "recovery-candidate-visible"
+                ),
+                on_selected=lambda: _record_gate_stage(
+                    work_root, "consumer", "recovery-candidate-selected"
+                ),
             )
             discard_unsaved_message = _schedule_message_box_button(
                 app=app,
@@ -1054,10 +1066,18 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 label="Discard",
                 title="Unsaved project",
                 required=False,
+                on_visible=lambda: _record_gate_stage(
+                    work_root, "consumer", "unsaved-project-visible"
+                ),
+                on_selected=lambda: _record_gate_stage(
+                    work_root, "consumer", "unsaved-project-discarded"
+                ),
             )
+            _record_gate_stage(work_root, "consumer", "recovery-review-trigger")
             QTest.mouseClick(
                 window.review_recovery_notice_button, Qt.MouseButton.LeftButton
             )
+            _record_gate_stage(work_root, "consumer", "recovery-review-requested")
             _wait(
                 app,
                 lambda: (
@@ -1070,6 +1090,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
             )
             restore_message.raise_if_failed()
             discard_unsaved_message.raise_if_failed()
+            _record_gate_stage(work_root, "consumer", "recovery-restored")
             _record_gate_stage(work_root, "consumer", "data-restore")
             review_message = _schedule_message_box_button(
                 app=app,
