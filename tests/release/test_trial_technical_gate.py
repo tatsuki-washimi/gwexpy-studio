@@ -383,6 +383,135 @@ def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:
         assert f'"{stage}"' in source
 
 
+def test_recovery_dispatch_diagnostics_preserve_accepted_command_and_result(
+) -> None:
+    gate = _gate()
+    delegated: list[tuple[object, ...]] = []
+    stages: list[str] = []
+    candidates = [{"run_id": "recovery-1"}]
+    result = SimpleNamespace(success=True, payload={"recoveries": candidates})
+
+    def dispatch(
+        kind: str,
+        payload: dict[str, object],
+        *,
+        pending_action: str,
+        pending_params: dict[str, object] | None = None,
+    ) -> bool:
+        delegated.append((kind, payload, pending_action, pending_params))
+        return True
+
+    def handle_workspace_result(value: object) -> str:
+        delegated.append(("result", value))
+        return "handled"
+
+    window = SimpleNamespace(
+        _dispatch_command=dispatch,
+        _handle_workspace_result=handle_workspace_result,
+        _pending_action="list_recoveries",
+    )
+    gate._instrument_recovery_boundaries(window=window, record=stages.append)
+
+    accepted = window._dispatch_command(
+        "list_recoveries",
+        {"scope": "all"},
+        pending_action="list_recoveries",
+        pending_params={"source": "review"},
+    )
+    handled = window._handle_workspace_result(result)
+
+    assert accepted is True
+    assert handled == "handled"
+    assert delegated == [
+        (
+            "list_recoveries",
+            {"scope": "all"},
+            "list_recoveries",
+            {"source": "review"},
+        ),
+        ("result", result),
+    ]
+    assert stages == [
+        "recovery-list-dispatch-requested",
+        "recovery-list-dispatch-accepted",
+        "recovery-list-result-received",
+        "recovery-list-result-succeeded",
+        "recovery-candidates-received",
+    ]
+
+
+def test_recovery_dispatch_diagnostics_do_not_report_rejected_command_as_accepted(
+) -> None:
+    gate = _gate()
+    stages: list[str] = []
+    window = SimpleNamespace(
+        _dispatch_command=lambda *_args, **_kwargs: False,
+        _handle_workspace_result=lambda result: result,
+        _pending_action=None,
+    )
+    gate._instrument_recovery_boundaries(window=window, record=stages.append)
+
+    accepted = window._dispatch_command(
+        "list_recoveries", {}, pending_action="list_recoveries"
+    )
+
+    assert accepted is False
+    assert stages == ["recovery-list-dispatch-requested"]
+
+
+def test_recovery_dispatch_diagnostics_distinguish_an_empty_list_result() -> None:
+    gate = _gate()
+    stages: list[str] = []
+    result = SimpleNamespace(success=True, payload={"recoveries": []})
+    window = SimpleNamespace(
+        _dispatch_command=lambda *_args, **_kwargs: True,
+        _handle_workspace_result=lambda value: value,
+        _pending_action="list_recoveries",
+    )
+    gate._instrument_recovery_boundaries(window=window, record=stages.append)
+
+    handled = window._handle_workspace_result(result)
+
+    assert handled is result
+    assert stages == [
+        "recovery-list-result-received",
+        "recovery-list-result-succeeded",
+    ]
+
+
+def test_recovery_dispatch_diagnostics_record_an_error_result_at_handler_entry(
+) -> None:
+    gate = _gate()
+    stages: list[str] = []
+    handled: list[object] = []
+    result = SimpleNamespace(success=False, payload={})
+
+    def handle_workspace_result(value: object) -> str:
+        handled.append(value)
+        return "handled"
+
+    window = SimpleNamespace(
+        _dispatch_command=lambda *_args, **_kwargs: True,
+        _handle_workspace_result=handle_workspace_result,
+        _pending_action="list_recoveries",
+    )
+    gate._instrument_recovery_boundaries(window=window, record=stages.append)
+
+    outcome = window._handle_workspace_result(result)
+
+    assert outcome == "handled"
+    assert handled == [result]
+    assert stages == ["recovery-list-result-received"]
+
+
+def test_consumer_installs_recovery_dispatch_diagnostics_before_review() -> None:
+    source = inspect.getsource(_gate()._run_consumer_launcher)
+
+    assert source.index("_instrument_recovery_boundaries(") < source.index(
+        "QTest.mouseClick("
+    )
+
+
 def test_shared_memory_cleanup_probe_uses_reattach_not_dev_shm() -> None:
     assert _gate().shared_memory_cleanup_probe("trialgate-") is True
 
