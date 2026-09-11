@@ -995,6 +995,48 @@ def _schedule_message_box_button(
     return state
 
 
+def _instrument_recovery_boundaries(
+    *, window: Any, record: Callable[[str], None]
+) -> None:
+    """Trace recovery dispatch boundaries without changing application behavior."""
+    original_dispatch = window._dispatch_command
+    original_handle_workspace_result = window._handle_workspace_result
+
+    def dispatch(
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        pending_action: str,
+        pending_params: dict[str, Any] | None = None,
+    ) -> bool:
+        traces_recovery = kind == "list_recoveries"
+        if traces_recovery:
+            record("recovery-list-dispatch-requested")
+        accepted = original_dispatch(
+            kind,
+            payload,
+            pending_action=pending_action,
+            pending_params=pending_params,
+        )
+        if traces_recovery and accepted:
+            record("recovery-list-dispatch-accepted")
+        return accepted
+
+    def handle_workspace_result(result: Any) -> Any:
+        if window._pending_action == "list_recoveries":
+            record("recovery-list-result-received")
+            if result.success:
+                record("recovery-list-result-succeeded")
+                payload = result.payload if isinstance(result.payload, Mapping) else {}
+                recoveries = payload.get("recoveries")
+                if isinstance(recoveries, list) and recoveries:
+                    record("recovery-candidates-received")
+        return original_handle_workspace_result(result)
+
+    window._dispatch_command = dispatch
+    window._handle_workspace_result = handle_workspace_result
+
+
 def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) -> None:
     """Open a saved project in a fresh launcher and explicitly restore recovery."""
     _record_gate_stage(work_root, "consumer", "bootstrap")
@@ -1071,6 +1113,12 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 ),
                 on_selected=lambda: _record_gate_stage(
                     work_root, "consumer", "unsaved-project-discarded"
+                ),
+            )
+            _instrument_recovery_boundaries(
+                window=window,
+                record=lambda stage: _record_gate_stage(
+                    work_root, "consumer", stage
                 ),
             )
             _record_gate_stage(work_root, "consumer", "recovery-review-trigger")
