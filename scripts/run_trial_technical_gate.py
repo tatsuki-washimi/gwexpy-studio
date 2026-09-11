@@ -28,6 +28,13 @@ _RECOVERY_DIALOG_TITLE = "Recover unfinished work"
 _RECOVERY_DIALOG_DIAGNOSTIC_STAGES = frozenset(
     {
         "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+        "consumer/recovery-dialog-scheduler-resolved",
+        "consumer/recovery-dialog-scheduler-bound",
+        "consumer/recovery-dialog-diagnostic-retained",
         "consumer/recovery-dialog-instance-bound",
         "consumer/recovery-dialog-poll-entered",
         "consumer/recovery-dialog-button-resolved",
@@ -146,25 +153,51 @@ class _WorkspaceMessageBinding:
                     "consumer/recovery-dialog-boundary-entered"
                 )
             message = getattr(execute, "__self__", None)
-            if message is not None and isinstance(message, self._message_type):
-                scheduled = self._scheduled.get(message.windowTitle())
-                if scheduled is not None:
-                    scheduled.bind(message)
-                    if (
-                        diagnostic_attempt
-                        and message.windowTitle() == _RECOVERY_DIALOG_TITLE
-                    ):
-                        scheduled.retain_diagnostic(
-                            message,
-                            self,
-                            on_poll=lambda: None,
-                            on_button=lambda: None,
-                        )
-                        self._diagnostic_message = message
-                        self._diagnostic_scheduler = scheduled
+            if message is not None:
+                if diagnostic_attempt:
+                    self._record_diagnostic_stage(
+                        "consumer/recovery-dialog-callable-owner-present"
+                    )
+                if isinstance(message, self._message_type):
+                    if diagnostic_attempt:
                         self._record_diagnostic_stage(
-                            "consumer/recovery-dialog-instance-bound"
+                            "consumer/recovery-dialog-callable-owner-compatible"
                         )
+                    title = message.windowTitle()
+                    if diagnostic_attempt:
+                        self._record_diagnostic_stage(
+                            "consumer/recovery-dialog-title-read"
+                        )
+                        if title == _RECOVERY_DIALOG_TITLE:
+                            self._record_diagnostic_stage(
+                                "consumer/recovery-dialog-title-matched"
+                            )
+                    scheduled = self._scheduled.get(title)
+                    if scheduled is not None:
+                        if diagnostic_attempt and title == _RECOVERY_DIALOG_TITLE:
+                            self._record_diagnostic_stage(
+                                "consumer/recovery-dialog-scheduler-resolved"
+                            )
+                            scheduled.bind(message)
+                            self._record_diagnostic_stage(
+                                "consumer/recovery-dialog-scheduler-bound"
+                            )
+                            scheduled.retain_diagnostic(
+                                message,
+                                self,
+                                on_poll=lambda: None,
+                                on_button=lambda: None,
+                            )
+                            self._record_diagnostic_stage(
+                                "consumer/recovery-dialog-diagnostic-retained"
+                            )
+                            self._diagnostic_message = message
+                            self._diagnostic_scheduler = scheduled
+                            self._record_diagnostic_stage(
+                                "consumer/recovery-dialog-instance-bound"
+                            )
+                        else:
+                            scheduled.bind(message)
             try:
                 result = self._original(window, execute, *args, **kwargs)
             except BaseException:
@@ -266,6 +299,71 @@ _TRIAL_VERSION = re.compile(
 )
 _GATE_STAGE_FILENAME = "technical-gate-stage.json"
 _GATE_STAGE_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_PRODUCER_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "welcome",
+        "sample-availability",
+        "try-sample",
+        "sample-catalog",
+        "sample-inspection",
+        "sample-read",
+        "crop-dialog",
+        "crop",
+        "asd-dialog",
+        "asd",
+        "save-project",
+        "post-save-input",
+        "post-save-crop-dialog",
+        "recovery-checkpoint",
+        "python-export",
+        "intentional-crash",
+    }
+)
+_CONSUMER_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "project-reopen",
+        "recovery-review",
+        "recovery-candidate-visible",
+        "recovery-candidate-selected",
+        "unsaved-project-visible",
+        "unsaved-project-discarded",
+        "recovery-review-trigger",
+        "recovery-review-requested",
+        "recovery-list-dispatch-requested",
+        "recovery-list-dispatch-accepted",
+        "recovery-list-result-received",
+        "recovery-list-result-succeeded",
+        "recovery-candidates-received",
+        "recovery-restored",
+        "data-restore",
+        "recovery-consumption",
+        "restored-project-save",
+        "worker-exit",
+        "complete",
+        "recovery-dialog-boundary-entered",
+        "recovery-dialog-callable-owner-present",
+        "recovery-dialog-callable-owner-compatible",
+        "recovery-dialog-title-read",
+        "recovery-dialog-title-matched",
+        "recovery-dialog-scheduler-resolved",
+        "recovery-dialog-scheduler-bound",
+        "recovery-dialog-diagnostic-retained",
+        "recovery-dialog-instance-bound",
+        "recovery-dialog-poll-entered",
+        "recovery-dialog-button-resolved",
+        "recovery-dialog-modal-returned",
+    }
+)
+_ALLOWED_GATE_STAGE_PAIRS = frozenset(
+    {
+        *(f"producer/{stage}" for stage in _PRODUCER_GATE_STAGES),
+        *(f"consumer/{stage}" for stage in _CONSUMER_GATE_STAGES),
+    }
+)
 _SEALED_GATE_BOOTSTRAP = (
     "import os as _os\n"
     "import sys as _sys\n"
@@ -289,6 +387,7 @@ def _record_gate_stage(work_root: Path, phase: str, stage: str) -> None:
     if (
         phase not in {"producer", "consumer"}
         or _GATE_STAGE_TOKEN.fullmatch(stage) is None
+        or f"{phase}/{stage}" not in _ALLOWED_GATE_STAGE_PAIRS
     ):
         raise GateError("technical-gate diagnostic stage is invalid")
     path = work_root / _GATE_STAGE_FILENAME
@@ -326,6 +425,7 @@ def read_gate_stage(work_root: Path) -> str:
         or document["phase"] not in {"producer", "consumer"}
         or not isinstance(document["stage"], str)
         or _GATE_STAGE_TOKEN.fullmatch(document["stage"]) is None
+        or f"{document['phase']}/{document['stage']}" not in _ALLOWED_GATE_STAGE_PAIRS
     ):
         raise GateError("technical-gate diagnostic stage is invalid")
     return f"{document['phase']}/{document['stage']}"

@@ -1,4 +1,9 @@
-"""Contracts for the source-tree-independent installed-wheel technical gate."""
+"""Contracts for the source-tree-independent installed-wheel technical gate.
+
+A last-success prefix cannot distinguish a next-operation exception from a
+failure to record its successor; the prefix only identifies the last confirmed
+boundary.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -50,6 +56,29 @@ def test_gate_stage_record_is_canonical_and_path_free(tmp_path: Path) -> None:
     assert gate.read_gate_stage(tmp_path) == "producer/crop-dialog"
     with pytest.raises(gate.GateError, match="stage"):
         gate._record_gate_stage(tmp_path, "producer", "not/a-stage")
+
+
+def test_gate_recorder_and_capture_collector_share_the_complete_stage_allowlist(
+    tmp_path: Path,
+) -> None:
+    gate = _gate()
+    capture = importlib.import_module("scripts.capture_trial_resolution")
+
+    assert gate._ALLOWED_GATE_STAGE_PAIRS == capture._ALLOWED_GATE_STAGE_PAIRS
+    with pytest.raises(gate.GateError, match="stage"):
+        gate._record_gate_stage(tmp_path, "consumer", "syntactically-valid")
+
+
+def test_gate_stage_reader_rejects_a_syntactically_valid_unallowlisted_pair(
+    tmp_path: Path,
+) -> None:
+    gate = _gate()
+    (tmp_path / "technical-gate-stage.json").write_bytes(
+        b'{"phase":"consumer","stage":"syntactically-valid"}\n'
+    )
+
+    with pytest.raises(gate.GateError, match="stage"):
+        gate.read_gate_stage(tmp_path)
 
 
 def test_gate_waits_for_sample_catalog_before_requesting_inspection(
@@ -434,6 +463,260 @@ def _diagnostic_binding(
     )
 
 
+class _PrefixMessage:
+    def __init__(self, title: str, *, title_error: BaseException | None = None) -> None:
+        self._title = title
+        self.title_reads = 0
+        self._title_error = title_error
+
+    def windowTitle(self) -> str:  # noqa: N802 - Qt API spelling
+        self.title_reads += 1
+        if self._title_error is not None:
+            raise self._title_error
+        return self._title
+
+    def execute(self) -> object:
+        return "executed"
+
+
+class _PrefixCallable:
+    def __init__(self, owner: object) -> None:
+        self.owner = owner
+        self.self_reads = 0
+
+    @property
+    def __self__(self) -> object:
+        self.self_reads += 1
+        return self.owner
+
+    def __call__(self) -> object:
+        return "executed"
+
+
+class _PrefixScheduler:
+    diagnostic_selection_succeeded = True
+
+    def __init__(self, *, bind_error: BaseException | None = None) -> None:
+        self.bind_error = bind_error
+        self.bound: object | None = None
+        self.retain_error: BaseException | None = None
+
+    def bind(self, message: object) -> None:
+        if self.bind_error is not None:
+            raise self.bind_error
+        self.bound = message
+
+    def retain_diagnostic(
+        self,
+        _message: object,
+        _binding: object,
+        *,
+        on_poll: object,
+        on_button: object,
+    ) -> None:
+        del on_poll, on_button
+        if self.retain_error is not None:
+            raise self.retain_error
+
+
+def _prefix_binding(stages: list[str]) -> Any:
+    return _diagnostic_binding(record=stages.append, message_type=_PrefixMessage)
+
+
+def test_recovery_prefix_absent_callable_owner_stops_after_boundary() -> None:
+    """The last prefix cannot classify an exception or missing successor record."""
+    stages: list[str] = []
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    try:
+        binding._workspace_module.workspace_dialog(object(), lambda: "executed")
+    finally:
+        binding.restore()
+
+    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+
+
+def test_recovery_prefix_incompatible_callable_owner_stops_after_owner_present(
+) -> None:
+    """A present callable owner must be compatible before title inspection."""
+    stages: list[str] = []
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    owner = object()
+    execute = _PrefixCallable(owner)
+    try:
+        assert (
+            binding._workspace_module.workspace_dialog(object(), execute)
+            == "executed"
+        )
+    finally:
+        binding.restore()
+
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+    ]
+    assert execute.self_reads == 1
+
+
+def test_recovery_prefix_title_read_exception_stops_before_title_read_stage() -> None:
+    """A title-read exception leaves the prior prefix as the only evidence."""
+    stages: list[str] = []
+    sentinel = RuntimeError("title value must stay private")
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    message = _PrefixMessage("Recover unfinished work", title_error=sentinel)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            binding._workspace_module.workspace_dialog(object(), message.execute)
+    finally:
+        binding.restore()
+
+    assert caught.value is sentinel
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+    ]
+    assert message.title_reads == 1
+
+
+def test_recovery_prefix_title_mismatch_stops_after_title_read() -> None:
+    """A non-recovery title cannot reach scheduler resolution."""
+    stages: list[str] = []
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    message = _PrefixMessage("Other dialog")
+    try:
+        assert (
+            binding._workspace_module.workspace_dialog(object(), message.execute)
+            == "executed"
+        )
+    finally:
+        binding.restore()
+
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+    ]
+    assert message.title_reads == 1
+
+
+def test_recovery_prefix_missing_scheduler_stops_after_title_match() -> None:
+    """A matched title without a scheduler cannot claim a bound dialog."""
+    stages: list[str] = []
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    message = _PrefixMessage("Recover unfinished work")
+    try:
+        assert (
+            binding._workspace_module.workspace_dialog(object(), message.execute)
+            == "executed"
+        )
+    finally:
+        binding.restore()
+
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+    ]
+    assert message.title_reads == 1
+
+
+def test_recovery_prefix_bind_failure_stops_after_scheduler_resolution() -> None:
+    """A bind exception leaves scheduler resolution as the last confirmed step."""
+    stages: list[str] = []
+    sentinel = RuntimeError("bind detail must stay private")
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    scheduler = _PrefixScheduler(bind_error=sentinel)
+    binding.register("Recover unfinished work", scheduler)
+    message = _PrefixMessage("Recover unfinished work")
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            binding._workspace_module.workspace_dialog(object(), message.execute)
+    finally:
+        binding.restore()
+
+    assert caught.value is sentinel
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+        "consumer/recovery-dialog-scheduler-resolved",
+    ]
+
+
+def test_recovery_prefix_retain_failure_stops_after_scheduler_bind() -> None:
+    """A retain exception leaves scheduler binding as the last confirmed step."""
+    stages: list[str] = []
+    sentinel = RuntimeError("retain detail must stay private")
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    scheduler = _PrefixScheduler()
+    scheduler.retain_error = sentinel
+    binding.register("Recover unfinished work", scheduler)
+    message = _PrefixMessage("Recover unfinished work")
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            binding._workspace_module.workspace_dialog(object(), message.execute)
+    finally:
+        binding.restore()
+
+    assert caught.value is sentinel
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+        "consumer/recovery-dialog-scheduler-resolved",
+        "consumer/recovery-dialog-scheduler-bound",
+    ]
+
+
+def test_recovery_prefix_full_success_reads_owner_and_title_once() -> None:
+    """Full success emits each prefix only after its operation succeeds."""
+    stages: list[str] = []
+    binding = _prefix_binding(stages)
+    binding.arm_recovery()
+    scheduler = _PrefixScheduler()
+    binding.register("Recover unfinished work", scheduler)
+    message = _PrefixMessage("Recover unfinished work")
+    execute = _PrefixCallable(message)
+    try:
+        assert (
+            binding._workspace_module.workspace_dialog(object(), execute)
+            == "executed"
+        )
+    finally:
+        binding.restore()
+
+    assert stages[:8] == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+        "consumer/recovery-dialog-scheduler-resolved",
+        "consumer/recovery-dialog-scheduler-bound",
+        "consumer/recovery-dialog-diagnostic-retained",
+    ]
+    assert stages[8:] == [
+        "consumer/recovery-dialog-instance-bound",
+        "consumer/recovery-dialog-modal-returned",
+    ]
+    assert execute.self_reads == 1
+    assert message.title_reads == 1
+
+
 def test_workspace_dialog_binding_emits_fixed_recovery_stages_in_success_order(
 ) -> None:
     from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
@@ -473,6 +756,13 @@ def test_workspace_dialog_binding_emits_fixed_recovery_stages_in_success_order(
     assert scheduled.error is None
     assert stages == [
         "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+        "consumer/recovery-dialog-scheduler-resolved",
+        "consumer/recovery-dialog-scheduler-bound",
+        "consumer/recovery-dialog-diagnostic-retained",
         "consumer/recovery-dialog-instance-bound",
         "consumer/recovery-dialog-poll-entered",
         "existing-visible",
@@ -579,10 +869,15 @@ def test_workspace_dialog_binding_armed_different_title_is_single_use() -> None:
         owner.close()
     assert wrong_schedule.error is None
     assert right_schedule.error is None
-    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+    ]
 
 
-def test_workspace_dialog_binding_armed_fixed_title_without_scheduler_is_boundary_only(
+def test_workspace_dialog_binding_armed_fixed_title_without_scheduler_reports_prefix(
 ) -> None:
     from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
@@ -600,7 +895,13 @@ def test_workspace_dialog_binding_armed_fixed_title_without_scheduler_is_boundar
         binding.restore()
         dialog.close()
         owner.close()
-    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+    ]
 
 
 def test_workspace_dialog_binding_unarmed_registered_dialogs_keep_existing_click_path(
@@ -991,6 +1292,13 @@ def test_workspace_dialog_binding_source_declares_exact_fixed_stages_and_record_
     stages = gate._RECOVERY_DIALOG_DIAGNOSTIC_STAGES
     assert stages == {
         "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-callable-owner-present",
+        "consumer/recovery-dialog-callable-owner-compatible",
+        "consumer/recovery-dialog-title-read",
+        "consumer/recovery-dialog-title-matched",
+        "consumer/recovery-dialog-scheduler-resolved",
+        "consumer/recovery-dialog-scheduler-bound",
+        "consumer/recovery-dialog-diagnostic-retained",
         "consumer/recovery-dialog-instance-bound",
         "consumer/recovery-dialog-poll-entered",
         "consumer/recovery-dialog-button-resolved",

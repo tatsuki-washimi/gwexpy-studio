@@ -239,6 +239,71 @@ _GENERATED_WHEEL_MEMBERS = (
 )
 _GATE_SCRIPT_GIT_PATH = "scripts/run_trial_technical_gate.py"
 _SEALED_GATE_SCRIPT_NAME = "installed-trial-technical-gate.py"
+_PRODUCER_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "welcome",
+        "sample-availability",
+        "try-sample",
+        "sample-catalog",
+        "sample-inspection",
+        "sample-read",
+        "crop-dialog",
+        "crop",
+        "asd-dialog",
+        "asd",
+        "save-project",
+        "post-save-input",
+        "post-save-crop-dialog",
+        "recovery-checkpoint",
+        "python-export",
+        "intentional-crash",
+    }
+)
+_CONSUMER_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "project-reopen",
+        "recovery-review",
+        "recovery-candidate-visible",
+        "recovery-candidate-selected",
+        "unsaved-project-visible",
+        "unsaved-project-discarded",
+        "recovery-review-trigger",
+        "recovery-review-requested",
+        "recovery-list-dispatch-requested",
+        "recovery-list-dispatch-accepted",
+        "recovery-list-result-received",
+        "recovery-list-result-succeeded",
+        "recovery-candidates-received",
+        "recovery-restored",
+        "data-restore",
+        "recovery-consumption",
+        "restored-project-save",
+        "worker-exit",
+        "complete",
+        "recovery-dialog-boundary-entered",
+        "recovery-dialog-callable-owner-present",
+        "recovery-dialog-callable-owner-compatible",
+        "recovery-dialog-title-read",
+        "recovery-dialog-title-matched",
+        "recovery-dialog-scheduler-resolved",
+        "recovery-dialog-scheduler-bound",
+        "recovery-dialog-diagnostic-retained",
+        "recovery-dialog-instance-bound",
+        "recovery-dialog-poll-entered",
+        "recovery-dialog-button-resolved",
+        "recovery-dialog-modal-returned",
+    }
+)
+_ALLOWED_GATE_STAGE_PAIRS = frozenset(
+    {
+        *(f"producer/{stage}" for stage in _PRODUCER_GATE_STAGES),
+        *(f"consumer/{stage}" for stage in _CONSUMER_GATE_STAGES),
+    }
+)
 
 
 def load_trial_artifact(
@@ -400,7 +465,7 @@ def run_installed_technical_gate(
         raise ResolutionError("installed technical gate could not run") from exc
     if completed.returncode != 0:
         try:
-            stage = _read_gate_stage(work_root)
+            stage = _collect_gate_stage(work_root)
         except _GateError:
             raise ResolutionError("installed technical gate failed") from None
         raise ResolutionError(f"installed technical gate failed at {stage}")
@@ -413,6 +478,14 @@ def run_installed_technical_gate(
     if result["status"] != "passed":
         raise ResolutionError("installed technical gate failed")
     return result
+
+
+def _collect_gate_stage(work_root: Path) -> str:
+    """Collect only a canonical stage pair from the sealed gate workspace."""
+    stage = _read_gate_stage(work_root)
+    if stage not in _ALLOWED_GATE_STAGE_PAIRS:
+        raise _GateError("technical-gate diagnostic stage is invalid")
+    return stage
 
 
 def verify_capture_checkout(checkout: Path, artifact: TrialArtifact) -> None:
