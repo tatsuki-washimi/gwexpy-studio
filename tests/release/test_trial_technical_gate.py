@@ -290,6 +290,43 @@ def test_operation_dialog_acceptance_is_native_safe_and_bounded() -> None:
     assert "technical-gate operation dialog timed out" in source
 
 
+def test_recovery_message_finds_the_visible_cocoa_dialog() -> None:
+    """Cocoa may expose a visible message box without an active modal widget."""
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    dialog.show()
+    app.processEvents()
+    cocoa_like_app = SimpleNamespace(
+        activeModalWidget=lambda: None,
+        topLevelWidgets=lambda: [dialog],
+    )
+
+    scheduled = _gate()._schedule_message_box_button(
+        app=cocoa_like_app,
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.2,
+    )
+    _gate()._wait(
+        app,
+        lambda: scheduled.handled or scheduled.error is not None,
+        "recovery message click",
+        timeout_s=1.0,
+    )
+
+    assert scheduled.error is None
+    assert scheduled.handled is True
+    dialog.close()
+    owner.close()
+
+
 def test_shared_memory_cleanup_probe_uses_reattach_not_dev_shm() -> None:
     assert _gate().shared_memory_cleanup_probe("trialgate-") is True
 

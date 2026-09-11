@@ -927,13 +927,30 @@ def _schedule_message_box_button(
         deadline_timer=deadline_timer,
     )
 
+    def current_message() -> Any | None:
+        active = app.activeModalWidget()
+        if isinstance(active, QMessageBox) and active.windowTitle() == title:
+            return active
+        if active is not None:
+            return None
+        candidates = [
+            widget
+            for widget in app.topLevelWidgets()
+            if (
+                isinstance(widget, QMessageBox)
+                and widget.isVisible()
+                and widget.windowTitle() == title
+            )
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
     def fail(error: BaseException) -> None:
         if state.error is None:
             state.error = error
         state.stop()
-        active = app.activeModalWidget()
-        if isinstance(active, QMessageBox) and active.windowTitle() == title:
-            active.reject()
+        message = current_message()
+        if message is not None:
+            message.reject()
 
     def expire() -> None:
         if not state.handled and required:
@@ -945,13 +962,13 @@ def _schedule_message_box_button(
         if state.handled or state.error is not None:
             return
         try:
-            active = app.activeModalWidget()
-            if not isinstance(active, QMessageBox) or active.windowTitle() != title:
+            message = current_message()
+            if message is None:
                 return
             button = next(
                 (
                     candidate
-                    for candidate in active.buttons()
+                    for candidate in message.buttons()
                     if candidate.text().replace("&", "") == label
                 ),
                 None,
