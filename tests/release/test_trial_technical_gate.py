@@ -327,6 +327,62 @@ def test_recovery_message_finds_the_visible_cocoa_dialog() -> None:
     owner.close()
 
 
+def test_recovery_message_reports_visible_and_selected_boundaries() -> None:
+    """A diagnostic stage can distinguish discovery from button activation."""
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    dialog.show()
+    app.processEvents()
+    cocoa_like_app = SimpleNamespace(
+        activeModalWidget=lambda: None,
+        topLevelWidgets=lambda: [dialog],
+    )
+    boundaries: list[str] = []
+
+    scheduled = _gate()._schedule_message_box_button(
+        app=cocoa_like_app,
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.2,
+        on_visible=lambda: boundaries.append("visible"),
+        on_selected=lambda: boundaries.append("selected"),
+    )
+    _gate()._wait(
+        app,
+        lambda: scheduled.handled or scheduled.error is not None,
+        "recovery message diagnostics",
+        timeout_s=1.0,
+    )
+
+    assert scheduled.error is None
+    assert scheduled.handled is True
+    assert boundaries == ["visible", "selected"]
+    dialog.close()
+    owner.close()
+
+
+def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:
+    source = inspect.getsource(_gate()._run_consumer_launcher)
+
+    for stage in (
+        "recovery-review-trigger",
+        "recovery-review-requested",
+        "recovery-candidate-visible",
+        "recovery-candidate-selected",
+        "unsaved-project-visible",
+        "unsaved-project-discarded",
+        "recovery-restored",
+    ):
+        assert f'"{stage}"' in source
+
+
 def test_shared_memory_cleanup_probe_uses_reattach_not_dev_shm() -> None:
     assert _gate().shared_memory_cleanup_probe("trialgate-") is True
 
