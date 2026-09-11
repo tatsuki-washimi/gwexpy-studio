@@ -30,8 +30,13 @@ class _ScheduledMessageClick:
     def __init__(self, *, poll_timer: Any, deadline_timer: Any) -> None:
         self._poll_timer = poll_timer
         self._deadline_timer = deadline_timer
+        self.bound_message: Any | None = None
         self.error: BaseException | None = None
         self.handled = False
+
+    def bind(self, message: Any) -> None:
+        """Retain the concrete message passed into the workspace dialog boundary."""
+        self.bound_message = message
 
     def stop(self) -> None:
         """Stop both owner-bound timers once this interaction is settled."""
@@ -42,6 +47,48 @@ class _ScheduledMessageClick:
         """Re-raise a callback failure after its nested Qt modal loop returns."""
         if self.error is not None:
             raise GateError("technical-gate message interaction failed") from self.error
+
+
+class _WorkspaceMessageBinding:
+    """Bind locally-created message boxes before their native modal loop starts."""
+
+    def __init__(self, *, workspace_module: Any, message_type: type[Any]) -> None:
+        self._workspace_module = workspace_module
+        self._message_type = message_type
+        self._original = workspace_module.workspace_dialog
+        self._scheduled: dict[str, _ScheduledMessageClick] = {}
+
+        def workspace_dialog(window: Any, execute: Any, *args: Any) -> Any:
+            message = getattr(execute, "__self__", None)
+            if isinstance(message, self._message_type):
+                scheduled = self._scheduled.get(message.windowTitle())
+                if scheduled is not None:
+                    scheduled.bind(message)
+            return self._original(window, execute, *args)
+
+        self._replacement = workspace_dialog
+        workspace_module.workspace_dialog = workspace_dialog
+
+    def register(self, title: str, scheduled: _ScheduledMessageClick) -> None:
+        """Register the one pending interaction for a message title."""
+        self._scheduled[title] = scheduled
+
+    def restore(self) -> None:
+        """Restore the application module after the consumer launcher exits."""
+        if self._workspace_module.workspace_dialog is self._replacement:
+            self._workspace_module.workspace_dialog = self._original
+
+
+def _install_workspace_message_binding() -> _WorkspaceMessageBinding:
+    """Install a consumer-local binding at the application's dialog boundary."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from gwexpy_studio.ui import workspace_window
+
+    return _WorkspaceMessageBinding(
+        workspace_module=workspace_window,
+        message_type=QMessageBox,
+    )
 
 
 _CHECK_NAMES = (
@@ -907,6 +954,7 @@ def _schedule_message_box_button(
     title: str,
     required: bool,
     timeout_s: float = 15.0,
+    binding: _WorkspaceMessageBinding | None = None,
     on_visible: Callable[[], None] | None = None,
     on_selected: Callable[[], None] | None = None,
 ) -> _ScheduledMessageClick:
@@ -928,8 +976,12 @@ def _schedule_message_box_button(
         poll_timer=poll_timer,
         deadline_timer=deadline_timer,
     )
+    if binding is not None:
+        binding.register(title, state)
 
     def current_message() -> Any | None:
+        if state.bound_message is not None:
+            return state.bound_message
         active = app.activeModalWidget()
         if isinstance(active, QMessageBox) and active.windowTitle() == title:
             return active
@@ -1095,6 +1147,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 label="Restore",
                 title="Recover unfinished work",
                 required=True,
+                binding=message_binding,
                 on_visible=lambda: _record_gate_stage(
                     work_root, "consumer", "recovery-candidate-visible"
                 ),
@@ -1108,6 +1161,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 label="Discard",
                 title="Unsaved project",
                 required=False,
+                binding=message_binding,
                 on_visible=lambda: _record_gate_stage(
                     work_root, "consumer", "unsaved-project-visible"
                 ),
@@ -1146,6 +1200,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 label="OK",
                 title="Review restoration",
                 required=True,
+                binding=message_binding,
             )
             window.restore_project_action.trigger()
             _wait(
@@ -1205,8 +1260,13 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
         QApplication(_qapplication_arguments())
     elif not isinstance(app, QApplication):
         raise GateError("normal launcher cannot use the existing Qt application")
+    message_binding = _install_workspace_message_binding()
     QTimer.singleShot(0, drive)
-    if launcher.main((str(project),)) != 0:
+    try:
+        launcher_status = launcher.main((str(project),))
+    finally:
+        message_binding.restore()
+    if launcher_status != 0:
         raise GateError("normal project launcher did not exit cleanly")
     if failure:
         raise GateError("technical-gate recovery workflow failed") from failure[0]
