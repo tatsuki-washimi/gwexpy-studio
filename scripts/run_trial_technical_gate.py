@@ -24,6 +24,18 @@ class GateError(RuntimeError):
     """Raised when the installed-wheel technical gate cannot be trusted."""
 
 
+_RECOVERY_DIALOG_TITLE = "Recover unfinished work"
+_RECOVERY_DIALOG_DIAGNOSTIC_STAGES = frozenset(
+    {
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-instance-bound",
+        "consumer/recovery-dialog-poll-entered",
+        "consumer/recovery-dialog-button-resolved",
+        "consumer/recovery-dialog-modal-returned",
+    }
+)
+
+
 class _ScheduledMessageClick:
     """Retain one bounded, Qt-owned message-box interaction."""
 
@@ -31,12 +43,63 @@ class _ScheduledMessageClick:
         self._poll_timer = poll_timer
         self._deadline_timer = deadline_timer
         self.bound_message: Any | None = None
+        self.diagnostic_message: Any | None = None
+        self._diagnostic_binding: _WorkspaceMessageBinding | None = None
+        self._diagnostic_poll_callback: Callable[[], None] | None = None
+        self._diagnostic_button_callback: Callable[[], None] | None = None
+        self.diagnostic_selection_succeeded = False
         self.error: BaseException | None = None
         self.handled = False
 
     def bind(self, message: Any) -> None:
         """Retain the concrete message passed into the workspace dialog boundary."""
         self.bound_message = message
+
+    def retain_diagnostic(
+        self,
+        message: Any,
+        binding: _WorkspaceMessageBinding,
+        *,
+        on_poll: Callable[[], None],
+        on_button: Callable[[], None],
+    ) -> None:
+        """Retain the exact message eligible for fixed recovery diagnostics."""
+        self.diagnostic_message = message
+        self._diagnostic_binding = binding
+        self._diagnostic_poll_callback = self._diagnostic_poll_callback or on_poll
+        self._diagnostic_button_callback = self._diagnostic_button_callback or on_button
+
+    def diagnostic_poll_entered(self) -> None:
+        """Run the bound-poll callback only for the retained message identity."""
+        if self._diagnostic_binding is not None:
+            self._diagnostic_binding._record_diagnostic_stage(
+                "consumer/recovery-dialog-poll-entered"
+            )
+        if self._diagnostic_poll_callback is not None:
+            self._diagnostic_poll_callback()
+
+    def diagnostic_button_resolved(self) -> None:
+        """Run the button callback only for the retained message identity."""
+        if self._diagnostic_binding is not None:
+            self._diagnostic_binding._record_diagnostic_stage(
+                "consumer/recovery-dialog-button-resolved"
+            )
+        if self._diagnostic_button_callback is not None:
+            self._diagnostic_button_callback()
+
+    def diagnostic_selection_complete(self) -> None:
+        """Mark the same scheduler complete after click and selected callback."""
+        self.diagnostic_selection_succeeded = True
+
+    def clear_binding(self) -> None:
+        """Release Qt and diagnostic references when the binding is restored."""
+        self.stop()
+        self.bound_message = None
+        self.diagnostic_message = None
+        self._diagnostic_binding = None
+        self._diagnostic_poll_callback = None
+        self._diagnostic_button_callback = None
+        self.diagnostic_selection_succeeded = False
 
     def stop(self) -> None:
         """Stop both owner-bound timers once this interaction is settled."""
@@ -50,21 +113,74 @@ class _ScheduledMessageClick:
 
 
 class _WorkspaceMessageBinding:
-    """Bind locally-created message boxes before their native modal loop starts."""
+    """Bind locally-created message boxes before their native modal loop starts.
 
-    def __init__(self, *, workspace_module: Any, message_type: type[Any]) -> None:
+    The optional ``record=`` callback receives only the fixed diagnostic stage
+    names defined above.
+    """
+
+    def __init__(
+        self,
+        *,
+        workspace_module: Any,
+        message_type: type[Any],
+        record: Callable[[str], None] | None = None,
+    ) -> None:
         self._workspace_module = workspace_module
         self._message_type = message_type
         self._original = workspace_module.workspace_dialog
         self._scheduled: dict[str, _ScheduledMessageClick] = {}
+        self._record = record or (lambda _stage: None)
+        self._emitted_stages: set[str] = set()
+        self._recovery_attempt = "unarmed"
+        self._diagnostic_message: Any | None = None
+        self._diagnostic_scheduler: _ScheduledMessageClick | None = None
 
-        def workspace_dialog(window: Any, execute: Any, *args: Any) -> Any:
+        def workspace_dialog(
+            window: Any, execute: Any, *args: Any, **kwargs: Any
+        ) -> Any:
+            diagnostic_attempt = self._recovery_attempt == "armed"
+            if diagnostic_attempt:
+                self._recovery_attempt = "consumed"
+                self._record_diagnostic_stage(
+                    "consumer/recovery-dialog-boundary-entered"
+                )
             message = getattr(execute, "__self__", None)
-            if isinstance(message, self._message_type):
+            if message is not None and isinstance(message, self._message_type):
                 scheduled = self._scheduled.get(message.windowTitle())
                 if scheduled is not None:
                     scheduled.bind(message)
-            return self._original(window, execute, *args)
+                    if (
+                        diagnostic_attempt
+                        and message.windowTitle() == _RECOVERY_DIALOG_TITLE
+                    ):
+                        scheduled.retain_diagnostic(
+                            message,
+                            self,
+                            on_poll=lambda: None,
+                            on_button=lambda: None,
+                        )
+                        self._diagnostic_message = message
+                        self._diagnostic_scheduler = scheduled
+                        self._record_diagnostic_stage(
+                            "consumer/recovery-dialog-instance-bound"
+                        )
+            try:
+                result = self._original(window, execute, *args, **kwargs)
+            except BaseException:
+                raise
+            scheduler = self._diagnostic_scheduler
+            if diagnostic_attempt and scheduler is not None:
+                if scheduler.diagnostic_selection_succeeded:
+                    self._record_diagnostic_stage(
+                        "consumer/recovery-dialog-modal-returned"
+                    )
+                elif scheduler.error is None:
+                    scheduler.error = GateError(
+                        "technical-gate diagnostic scheduler did not complete"
+                    )
+                    scheduler.stop()
+            return result
 
         self._replacement = workspace_dialog
         workspace_module.workspace_dialog = workspace_dialog
@@ -73,13 +189,50 @@ class _WorkspaceMessageBinding:
         """Register the one pending interaction for a message title."""
         self._scheduled[title] = scheduled
 
+    @property
+    def recovery_armed(self) -> bool:
+        """Return whether the single-use recovery result has armed this binding."""
+        return self._recovery_attempt == "armed"
+
+    @property
+    def recovery_attempt(self) -> str:
+        """Return the bounded recovery attempt state for diagnostics and tests."""
+        return self._recovery_attempt
+
+    def arm_recovery(self) -> None:
+        """Arm exactly one successful nonempty recovery result."""
+        if self._recovery_attempt == "unarmed":
+            self._recovery_attempt = "armed"
+
+    def _record_diagnostic_stage(self, stage: str) -> None:
+        """Record one fixed diagnostic stage and fail closed on recorder errors."""
+        if stage not in _RECOVERY_DIALOG_DIAGNOSTIC_STAGES:
+            raise GateError("technical-gate diagnostic stage is invalid")
+        if stage in self._emitted_stages:
+            return
+        try:
+            self._record(stage)
+        except BaseException as exc:
+            raise GateError("technical-gate diagnostic stage recorder failed") from exc
+        self._emitted_stages.add(stage)
+
     def restore(self) -> None:
         """Restore the application module after the consumer launcher exits."""
         if self._workspace_module.workspace_dialog is self._replacement:
             self._workspace_module.workspace_dialog = self._original
+        for scheduled in self._scheduled.values():
+            clear_binding = getattr(scheduled, "clear_binding", None)
+            if callable(clear_binding):
+                clear_binding()
+        self._scheduled.clear()
+        self._recovery_attempt = "unarmed"
+        self._diagnostic_message = None
+        self._diagnostic_scheduler = None
 
 
-def _install_workspace_message_binding() -> _WorkspaceMessageBinding:
+def _install_workspace_message_binding(
+    *, record: Callable[[str], None] | None = None
+) -> _WorkspaceMessageBinding:
     """Install a consumer-local binding at the application's dialog boundary."""
     from PySide6.QtWidgets import QMessageBox
 
@@ -88,6 +241,7 @@ def _install_workspace_message_binding() -> _WorkspaceMessageBinding:
     return _WorkspaceMessageBinding(
         workspace_module=workspace_window,
         message_type=QMessageBox,
+        record=record,
     )
 
 
@@ -955,8 +1109,11 @@ def _schedule_message_box_button(
     required: bool,
     timeout_s: float = 15.0,
     binding: _WorkspaceMessageBinding | None = None,
+    message_binding: _WorkspaceMessageBinding | None = None,
     on_visible: Callable[[], None] | None = None,
     on_selected: Callable[[], None] | None = None,
+    on_diagnostic_poll: Callable[[], None] | None = None,
+    on_diagnostic_button: Callable[[], None] | None = None,
 ) -> _ScheduledMessageClick:
     """Click a title-bound message button without racing another modal.
 
@@ -968,6 +1125,13 @@ def _schedule_message_box_button(
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QMessageBox
 
+    if (
+        binding is not None
+        and message_binding is not None
+        and binding is not message_binding
+    ):
+        raise GateError("technical-gate message binding is ambiguous")
+    binding = message_binding or binding
     poll_timer = QTimer(owner)
     poll_timer.setInterval(10)
     deadline_timer = QTimer(owner)
@@ -976,6 +1140,8 @@ def _schedule_message_box_button(
         poll_timer=poll_timer,
         deadline_timer=deadline_timer,
     )
+    state._diagnostic_poll_callback = on_diagnostic_poll
+    state._diagnostic_button_callback = on_diagnostic_button
     if binding is not None:
         binding.register(title, state)
 
@@ -1019,8 +1185,12 @@ def _schedule_message_box_button(
             message = current_message()
             if message is None:
                 return
+            if state.diagnostic_message is message:
+                state.diagnostic_poll_entered()
             if on_visible is not None:
                 on_visible()
+            if message is None:
+                return
             button = next(
                 (
                     candidate
@@ -1032,11 +1202,16 @@ def _schedule_message_box_button(
             if button is None:
                 fail(GateError("technical-gate expected message button is missing"))
                 return
+            if state.diagnostic_message is message:
+                state._diagnostic_button_callback = on_diagnostic_button
+                state.diagnostic_button_resolved()
             state.handled = True
             state.stop()
             button.click()
             if on_selected is not None:
                 on_selected()
+            if state.diagnostic_message is message:
+                state.diagnostic_selection_complete()
         except BaseException as exc:
             fail(exc)
 
@@ -1048,9 +1223,15 @@ def _schedule_message_box_button(
 
 
 def _instrument_recovery_boundaries(
-    *, window: Any, record: Callable[[str], None]
+    *,
+    window: Any,
+    record: Callable[[str], None],
+    message_binding: _WorkspaceMessageBinding | None = None,
 ) -> None:
-    """Trace recovery dispatch boundaries without changing application behavior."""
+    """Trace recovery dispatch boundaries without changing application behavior.
+
+    Callers pass the optional ``message_binding=`` diagnostic state owner.
+    """
     original_dispatch = window._dispatch_command
     original_handle_workspace_result = window._handle_workspace_result
 
@@ -1083,6 +1264,8 @@ def _instrument_recovery_boundaries(
                 recoveries = payload.get("recoveries")
                 if isinstance(recoveries, list) and recoveries:
                     record("recovery-candidates-received")
+                    if message_binding is not None:
+                        message_binding.arm_recovery()
         return original_handle_workspace_result(result)
 
     window._dispatch_command = dispatch
@@ -1145,7 +1328,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 app=app,
                 owner=window,
                 label="Restore",
-                title="Recover unfinished work",
+                title=_RECOVERY_DIALOG_TITLE,
                 required=True,
                 binding=message_binding,
                 on_visible=lambda: _record_gate_stage(
@@ -1174,6 +1357,7 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 record=lambda stage: _record_gate_stage(
                     work_root, "consumer", stage
                 ),
+                message_binding=message_binding,
             )
             _record_gate_stage(work_root, "consumer", "recovery-review-trigger")
             QTest.mouseClick(
@@ -1260,7 +1444,11 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
         QApplication(_qapplication_arguments())
     elif not isinstance(app, QApplication):
         raise GateError("normal launcher cannot use the existing Qt application")
-    message_binding = _install_workspace_message_binding()
+    message_binding = _install_workspace_message_binding(
+        record=lambda stage: _record_gate_stage(
+            work_root, *stage.split("/", 1)
+        )
+    )
     QTimer.singleShot(0, drive)
     try:
         launcher_status = launcher.main((str(project),))

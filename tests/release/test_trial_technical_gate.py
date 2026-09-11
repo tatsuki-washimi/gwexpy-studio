@@ -416,6 +416,591 @@ def test_workspace_dialog_binding_drives_message_without_global_discovery() -> N
     owner.close()
 
 
+def _diagnostic_binding(
+    *,
+    record: object,
+    original: object | None = None,
+    message_type: type[object] | None = None,
+) -> object:
+    gate = _gate()
+    module = SimpleNamespace(
+        workspace_dialog=original
+        or (lambda window, execute, *args, **kwargs: execute(*args, **kwargs))
+    )
+    return gate._WorkspaceMessageBinding(
+        workspace_module=module,
+        message_type=message_type or object,
+        record=record,
+    )
+
+
+def test_workspace_dialog_binding_emits_fixed_recovery_stages_in_success_order(
+) -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    app_like = SimpleNamespace(
+        activeModalWidget=lambda: None,
+        topLevelWidgets=lambda: [],
+    )
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    scheduled = gate._schedule_message_box_button(
+        app=app_like,
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.5,
+        binding=binding,
+        on_visible=lambda: stages.append("existing-visible"),
+        on_selected=lambda: stages.append("existing-selected"),
+    )
+
+    try:
+        binding._workspace_module.workspace_dialog(object(), dialog.exec)
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+
+    assert scheduled.error is None
+    assert stages == [
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-instance-bound",
+        "consumer/recovery-dialog-poll-entered",
+        "existing-visible",
+        "consumer/recovery-dialog-button-resolved",
+        "existing-selected",
+        "consumer/recovery-dialog-modal-returned",
+    ]
+
+
+def test_workspace_dialog_binding_unarmed_arbitrary_callable_emits_no_new_stages(
+) -> None:
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append)
+    sentinel = object()
+
+    assert (
+        binding._workspace_module.workspace_dialog(object(), lambda: sentinel)
+        is sentinel
+    )
+    assert stages == []
+
+
+def test_workspace_dialog_binding_armed_unbound_callable_is_single_use() -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    app_like = SimpleNamespace(
+        activeModalWidget=lambda: None, topLevelWidgets=lambda: []
+    )
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    assert (
+        binding._workspace_module.workspace_dialog(object(), lambda: "unbound")
+        == "unbound"
+    )
+    scheduled = gate._schedule_message_box_button(
+        app=app_like,
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.5,
+        binding=binding,
+    )
+    try:
+        binding._workspace_module.workspace_dialog(object(), dialog.exec)
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+    assert scheduled.error is None
+    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+
+
+def test_workspace_dialog_binding_armed_different_title_is_single_use() -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    wrong = QMessageBox(owner)
+    wrong.setWindowTitle("Other dialog")
+    wrong.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+    right = QMessageBox(owner)
+    right.setWindowTitle("Recover unfinished work")
+    right.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    app_like = SimpleNamespace(
+        activeModalWidget=lambda: None, topLevelWidgets=lambda: []
+    )
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    wrong_schedule = gate._schedule_message_box_button(
+        app=app_like,
+        owner=owner,
+        label="OK",
+        title="Other dialog",
+        required=True,
+        timeout_s=0.5,
+        binding=binding,
+    )
+    right_schedule = gate._schedule_message_box_button(
+        app=app_like,
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.5,
+        binding=binding,
+    )
+    try:
+        binding._workspace_module.workspace_dialog(object(), wrong.exec)
+        binding._workspace_module.workspace_dialog(object(), right.exec)
+    finally:
+        binding.restore()
+        wrong.close()
+        right.close()
+        owner.close()
+    assert wrong_schedule.error is None
+    assert right_schedule.error is None
+    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+
+
+def test_workspace_dialog_binding_armed_fixed_title_without_scheduler_is_boundary_only(
+) -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    try:
+        binding._workspace_module.workspace_dialog(object(), dialog.reject)
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+
+
+def test_workspace_dialog_binding_unarmed_registered_dialogs_keep_existing_click_path(
+) -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    dialogs = (
+        ("Recover unfinished work", "Restore"),
+        ("Other dialog", "OK"),
+    )
+    scheduled: list[object] = []
+    try:
+        for title, label in dialogs:
+            dialog = QMessageBox(owner)
+            dialog.setWindowTitle(title)
+            dialog.addButton(label, QMessageBox.ButtonRole.AcceptRole)
+            state = gate._schedule_message_box_button(
+                app=SimpleNamespace(
+                    activeModalWidget=lambda: None,
+                    topLevelWidgets=lambda: [],
+                ),
+                owner=owner,
+                label=label,
+                title=title,
+                required=True,
+                timeout_s=0.5,
+                binding=binding,
+            )
+            scheduled.append((state, dialog))
+            binding._workspace_module.workspace_dialog(object(), dialog.exec)
+    finally:
+        binding.restore()
+        for _, dialog in scheduled:
+            dialog.close()
+        owner.close()
+    assert all(state.error is None and state.handled for state, _ in scheduled)
+    assert stages == []
+
+
+def test_workspace_dialog_binding_fallback_discovery_never_runs_diagnostic_callbacks(
+) -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    calls: list[str] = []
+    dialog.show()
+    _app.processEvents()
+    state = gate._schedule_message_box_button(
+        app=SimpleNamespace(
+            activeModalWidget=lambda: None, topLevelWidgets=lambda: [dialog]
+        ),
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.5,
+        on_diagnostic_poll=lambda: calls.append("poll"),
+        on_diagnostic_button=lambda: calls.append("button"),
+    )
+    gate._wait(
+        _app,
+        lambda: state.handled or state.error is not None,
+        "fallback",
+        timeout_s=1,
+    )
+    dialog.close()
+    owner.close()
+    assert state.error is None
+    assert calls == []
+
+
+def test_workspace_dialog_binding_bound_dialog_stays_authoritative_when_not_visible(
+) -> None:
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    gate = _gate()
+    app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    fallback_calls: list[str] = []
+
+    class Button:
+        def __init__(self) -> None:
+            self.clicked = False
+
+        def text(self) -> str:
+            return "Restore"
+
+        def click(self) -> None:
+            self.clicked = True
+
+    class BoundMessage:
+        def __init__(self) -> None:
+            self.button = Button()
+            self.rejected = False
+
+        def isVisible(self) -> bool:  # noqa: N802 - Qt API spelling
+            return False
+
+        def buttons(self) -> list[Button]:
+            return [self.button]
+
+        def reject(self) -> None:
+            self.rejected = True
+
+    message = BoundMessage()
+    state = gate._schedule_message_box_button(
+        app=SimpleNamespace(
+            activeModalWidget=lambda: None,
+            topLevelWidgets=lambda: fallback_calls.append("fallback") or [],
+        ),
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.2,
+    )
+    state.bind(message)
+    gate._wait(
+        app,
+        lambda: state.handled or state.error is not None,
+        "bound dialog authority",
+        timeout_s=1,
+    )
+    owner.close()
+    assert state.error is None
+    assert state.handled is True
+    assert message.button.clicked is True
+    assert fallback_calls == []
+
+
+def test_workspace_dialog_binding_missing_button_never_emits_modal_return() -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    scheduled = gate._schedule_message_box_button(
+        app=SimpleNamespace(
+            activeModalWidget=lambda: None, topLevelWidgets=lambda: []
+        ),
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.2,
+        binding=binding,
+    )
+    try:
+        binding._workspace_module.workspace_dialog(object(), dialog.exec)
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+    assert scheduled.error is not None
+    assert "consumer/recovery-dialog-button-resolved" not in stages
+    assert "consumer/recovery-dialog-modal-returned" not in stages
+
+
+def test_workspace_dialog_binding_selected_callback_failure_never_emits_modal_return(
+) -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    stages: list[str] = []
+    sentinel = RuntimeError("selected callback")
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    scheduled = gate._schedule_message_box_button(
+        app=SimpleNamespace(
+            activeModalWidget=lambda: None, topLevelWidgets=lambda: []
+        ),
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.5,
+        binding=binding,
+        on_selected=lambda: (_ for _ in ()).throw(sentinel),
+    )
+    try:
+        binding._workspace_module.workspace_dialog(object(), dialog.exec)
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+    assert scheduled.error is sentinel
+    assert "consumer/recovery-dialog-modal-returned" not in stages
+
+
+def test_workspace_dialog_binding_other_scheduler_never_emits_modal_return(
+) -> None:
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    _app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    dialog = QMessageBox(owner)
+    dialog.setWindowTitle("Recover unfinished work")
+    dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append, message_type=QMessageBox)
+    binding.arm_recovery()
+    scheduled = gate._schedule_message_box_button(
+        app=SimpleNamespace(
+            activeModalWidget=lambda: None, topLevelWidgets=lambda: []
+        ),
+        owner=owner,
+        label="Restore",
+        title="Recover unfinished work",
+        required=True,
+        timeout_s=0.2,
+        binding=binding,
+    )
+    QTimer.singleShot(1, dialog.reject)
+    try:
+        binding._workspace_module.workspace_dialog(object(), dialog.exec)
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+    assert scheduled.error is not None
+    assert "consumer/recovery-dialog-modal-returned" not in stages
+
+
+def test_recovery_dispatch_diagnostics_arm_only_nonempty_success_before_delegation(
+) -> None:
+    gate = _gate()
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append)
+    calls: list[str] = []
+    armed_at_delegate: list[bool] = []
+
+    def handle(value: object) -> object:
+        calls.append("delegate")
+        armed_at_delegate.append(binding.recovery_armed)
+        return value
+
+    window = SimpleNamespace(
+        _dispatch_command=lambda *_args, **_kwargs: True,
+        _handle_workspace_result=handle,
+        _pending_action="list_recoveries",
+    )
+    gate._instrument_recovery_boundaries(
+        window=window, record=lambda _: None, message_binding=binding
+    )
+    for result in (
+        SimpleNamespace(success=False, payload={}),
+        SimpleNamespace(success=True, payload={"recoveries": []}),
+    ):
+        window._handle_workspace_result(result)
+        assert not binding.recovery_armed
+    result = SimpleNamespace(success=True, payload={"recoveries": [{"run_id": "r1"}]})
+    assert window._handle_workspace_result(result) is result
+    assert calls == ["delegate", "delegate", "delegate"]
+    assert armed_at_delegate == [False, False, True]
+    assert binding.recovery_armed
+
+
+def test_workspace_dialog_binding_diagnostic_stages_are_idempotent_and_single_use(
+) -> None:
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append)
+    binding.arm_recovery()
+    binding.arm_recovery()
+    binding._record_diagnostic_stage("consumer/recovery-dialog-boundary-entered")
+    binding._record_diagnostic_stage("consumer/recovery-dialog-boundary-entered")
+    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+    assert binding.recovery_armed
+    assert binding.recovery_attempt == "armed"
+
+
+def test_workspace_dialog_binding_preserves_positional_forwarding_and_return_identity(
+) -> None:
+    seen: list[tuple[object, ...]] = []
+    sentinel = object()
+
+    def original(
+        window: object, execute: object, *args: object, **kwargs: object
+    ) -> object:
+        seen.extend((window, execute, *args, kwargs))
+        return sentinel
+
+    binding = _diagnostic_binding(record=lambda _: None, original=original)
+    assert (
+        binding._workspace_module.workspace_dialog("window", "execute", 1, 2, key=3)
+        is sentinel
+    )
+    assert seen == ["window", "execute", 1, 2, {"key": 3}]
+
+
+def test_workspace_dialog_binding_preserves_sentinel_exception_without_modal_return(
+) -> None:
+    sentinel = RuntimeError("sentinel")
+    stages: list[str] = []
+
+    def original(*_args: object, **_kwargs: object) -> object:
+        raise sentinel
+
+    binding = _diagnostic_binding(record=stages.append, original=original)
+    binding.arm_recovery()
+    with pytest.raises(RuntimeError) as caught:
+        binding._workspace_module.workspace_dialog(object(), lambda: None)
+    assert caught.value is sentinel
+    assert "consumer/recovery-dialog-modal-returned" not in stages
+
+
+def test_workspace_dialog_binding_rejects_unknown_stage_before_recording() -> None:
+    recorded: list[str] = []
+    binding = _diagnostic_binding(record=recorded.append)
+    with pytest.raises(_gate().GateError, match="stage"):
+        binding._record_diagnostic_stage("consumer/recovery-dialog-unknown")
+    assert recorded == []
+
+
+def test_workspace_dialog_binding_recorder_failure_hides_recorder_text(
+) -> None:
+    hostile = "/private/hostile-recorder-output"
+
+    def record(_stage: str) -> None:
+        raise RuntimeError(hostile)
+
+    binding = _diagnostic_binding(record=record)
+    binding.arm_recovery()
+    with pytest.raises(_gate().GateError) as caught:
+        binding._workspace_module.workspace_dialog(object(), lambda: None)
+    assert hostile not in str(caught.value)
+
+
+def test_workspace_dialog_binding_restore_clears_attempt_registrations_and_references(
+) -> None:
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append)
+    binding.arm_recovery()
+    binding._record_diagnostic_stage("consumer/recovery-dialog-boundary-entered")
+    binding._diagnostic_message = object()
+    binding.register("Recover unfinished work", object())
+    binding.restore()
+    assert not binding.recovery_armed
+    assert binding.recovery_attempt == "unarmed"
+    assert binding._scheduled == {}
+    assert binding._diagnostic_message is None
+    assert binding._diagnostic_scheduler is None
+
+
+def test_workspace_dialog_binding_restore_rearm_cannot_reemit_stage() -> None:
+    stages: list[str] = []
+    binding = _diagnostic_binding(record=stages.append)
+    binding.arm_recovery()
+    binding._record_diagnostic_stage("consumer/recovery-dialog-boundary-entered")
+    binding._diagnostic_message = object()
+    binding.register("Recover unfinished work", object())
+
+    binding.restore()
+    assert binding.recovery_attempt == "unarmed"
+    assert binding._scheduled == {}
+    assert binding._diagnostic_message is None
+    assert binding._diagnostic_scheduler is None
+
+    binding.arm_recovery()
+    binding._record_diagnostic_stage("consumer/recovery-dialog-boundary-entered")
+    assert stages == ["consumer/recovery-dialog-boundary-entered"]
+
+
+def test_workspace_dialog_binding_source_declares_exact_fixed_stages_and_record_wiring(
+) -> None:
+    gate = _gate()
+    stages = gate._RECOVERY_DIALOG_DIAGNOSTIC_STAGES
+    assert stages == {
+        "consumer/recovery-dialog-boundary-entered",
+        "consumer/recovery-dialog-instance-bound",
+        "consumer/recovery-dialog-poll-entered",
+        "consumer/recovery-dialog-button-resolved",
+        "consumer/recovery-dialog-modal-returned",
+    }
+    source = inspect.getsource(gate._WorkspaceMessageBinding)
+    assert "record=" in source
+    assert "message_binding=" in inspect.getsource(gate._instrument_recovery_boundaries)
+
+
 def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:
     source = inspect.getsource(_gate()._run_consumer_launcher)
 
