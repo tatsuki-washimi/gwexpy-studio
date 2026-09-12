@@ -154,6 +154,25 @@ def test_gate_stage_reader_rejects_a_syntactically_valid_unallowlisted_pair(
         gate.read_gate_stage(tmp_path)
 
 
+def test_gate_stage_reader_accepts_closed_normal_checkpoints_only(
+    tmp_path: Path,
+) -> None:
+    gate = _gate()
+    for stage in (
+        "io-read-settled",
+        "restore-review-handled",
+        "restored-state-settled",
+    ):
+        gate._record_gate_stage(tmp_path, "normal", stage)
+        assert gate.read_gate_stage(tmp_path) == f"normal/{stage}"
+
+    (tmp_path / "technical-gate-stage.json").write_bytes(
+        b'{"phase":"normal","stage":"io-read-settled-extra"}\n'
+    )
+    with pytest.raises(gate.GateError, match="stage"):
+        gate.read_gate_stage(tmp_path)
+
+
 def test_gate_waits_for_sample_catalog_before_requesting_inspection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -182,6 +201,152 @@ def test_gate_waits_for_sample_catalog_before_requesting_inspection(
     gate._wait_for_sample_catalog(
         app=object(), window=window, panel=panel, idle_state=idle
     )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("PySide6") is None,
+    reason="PySide6 is unavailable",
+)
+def test_normal_io_read_waits_for_queued_preview_event() -> None:
+    """A queued preview can arrive after the worker reports a resident object."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    assert isinstance(app, QApplication)
+    gate = _gate()
+    idle = object()
+    previews: list[object] = []
+    window = SimpleNamespace(
+        bridge=SimpleNamespace(state=idle),
+        project=SimpleNamespace(objects=[object()]),
+        _workspace_status={"resident_object_ids": ["object-1"]},
+    )
+
+    old_completion = (
+        window.bridge.state is idle
+        and len(window.project.objects) == 1
+        and bool(window._workspace_status.get("resident_object_ids"))
+    )
+    assert old_completion is True
+    assert gate._normal_io_read_ready(
+        window=window, idle_state=idle, previews=previews
+    ) is False
+
+    QTimer.singleShot(0, lambda: previews.append(object()))
+    gate._wait(
+        app,
+        lambda: gate._normal_io_read_ready(
+            window=window, idle_state=idle, previews=previews
+        ),
+        "queued preview completion",
+        timeout_s=1.0,
+    )
+
+
+def test_preview_completion_is_recorded_after_canvas_accepts_it() -> None:
+    gate = _gate()
+    events: list[str] = []
+    previews: list[object] = []
+
+    def display(_preview: object, _spec: object) -> None:
+        events.append("display")
+
+    preview = object()
+    gate._record_preview_after_display(
+        previews=previews,
+        display=display,
+        preview=preview,
+        spec=object(),
+    )
+
+    assert events == ["display"]
+    assert previews == [preview]
+
+
+def test_preview_completion_is_not_recorded_when_canvas_rejects_it() -> None:
+    gate = _gate()
+    previews: list[object] = []
+
+    def display(_preview: object, _spec: object) -> None:
+        raise RuntimeError("canvas rejected preview")
+
+    with pytest.raises(RuntimeError, match="rejected"):
+        gate._record_preview_after_display(
+            previews=previews,
+            display=display,
+            preview=object(),
+            spec=object(),
+        )
+
+    assert previews == []
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("PySide6") is None,
+    reason="PySide6 is unavailable",
+)
+def test_normal_reopen_waits_for_queued_action_settlement() -> None:
+    """A disabled Review action cannot dispatch during status/result settling."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    assert isinstance(app, QApplication)
+    gate = _gate()
+    idle = object()
+    action = QAction("Review / Restore Data")
+    action.setEnabled(False)
+    triggered: list[bool] = []
+    action.triggered.connect(lambda: triggered.append(True))
+    window = SimpleNamespace(
+        bridge=SimpleNamespace(state=idle),
+        project=SimpleNamespace(objects=[object()]),
+        _workspace_status={
+            "project_path": "/tmp/normal-project.gwxproj",
+            "needs_restore": True,
+            "resident_object_ids": [],
+        },
+        _command_reserved=True,
+        _modal_active=False,
+        restore_project_action=action,
+    )
+
+    old_completion = (
+        window.bridge.state is idle
+        and len(window.project.objects) == 1
+        and window._workspace_status.get("project_path")
+        == "/tmp/normal-project.gwxproj"
+        and window._workspace_status.get("needs_restore") is True
+        and window._workspace_status.get("resident_object_ids") == []
+    )
+    assert old_completion is True
+    action.trigger()
+    assert triggered == []
+    assert gate._normal_reopen_ready(
+        window=window,
+        idle_state=idle,
+        project_path="/tmp/normal-project.gwxproj",
+    ) is False
+
+    def settle() -> None:
+        window._command_reserved = False
+        action.setEnabled(True)
+
+    QTimer.singleShot(0, settle)
+    gate._wait(
+        app,
+        lambda: gate._normal_reopen_ready(
+            window=window,
+            idle_state=idle,
+            project_path="/tmp/normal-project.gwxproj",
+        ),
+        "queued restore action settlement",
+        timeout_s=1.0,
+    )
+    action.trigger()
+    assert triggered == [True]
 
 
 def test_gate_selects_a_timeseries_before_the_post_asd_crop(
