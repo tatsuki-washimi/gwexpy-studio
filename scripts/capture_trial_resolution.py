@@ -416,6 +416,8 @@ _CONDA_MANAGER_FIELDS = {
 _CONDA_PACKAGE_FIELDS = {"build", "name", "version"}
 _CONDA_PACKAGE_NAME = re.compile(r"_?[a-z0-9][a-z0-9_.+-]*")
 _CONDA_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]*")
+_CONDA_CHANNEL = "conda-forge"
+_CONDA_PYPI_MARKERS = ("pypi", "pypi", "pypi_0")
 
 
 def load_trial_artifact(
@@ -1445,6 +1447,12 @@ def capture_trial_resolution(
         target.require_architecture(machine)
     except _TrialTargetError as exc:
         raise ResolutionError("resolution target architecture is unsupported") from exc
+    expected_subdir: str | None = None
+    if environment_backend == "conda":
+        try:
+            expected_subdir = _conda_subdir(target_name, machine)
+        except _ToolchainError as exc:
+            raise ResolutionError("resolution target conda subdir is invalid") from exc
     if target.os_id == "macos":
         if sys.platform != "darwin" or machine != "arm64":
             raise ResolutionError("macOS target requires a native Darwin ARM64 host")
@@ -1527,6 +1535,7 @@ def capture_trial_resolution(
                 conda_executable=conda_executable,
                 prefix=workspace / "phase-one",
                 cwd=workspace,
+                expected_subdir=expected_subdir,
             )
             if environment_backend == "conda"
             else None
@@ -1583,6 +1592,7 @@ def capture_trial_resolution(
                 conda_executable=conda_executable,
                 prefix=workspace / "phase-two",
                 cwd=workspace,
+                expected_subdir=expected_subdir,
             )
             if environment_backend == "conda"
             else None
@@ -1644,6 +1654,7 @@ def capture_trial_resolution(
                 conda_executable=conda_executable,
                 prefix=workspace / "phase-replay",
                 cwd=workspace,
+                expected_subdir=expected_subdir,
             )
             if replay_conda_packages != phase_one_conda_packages:
                 raise ResolutionError(
@@ -2037,9 +2048,11 @@ def _conda_environment_manager(
 
 
 def _conda_phase_packages(
-    *, conda_executable: Path, prefix: Path, cwd: Path
+    *, conda_executable: Path, prefix: Path, cwd: Path, expected_subdir: str
 ) -> list[dict[str, str]]:
     """Capture only the path-free conda package identity for one prefix."""
+    if not isinstance(expected_subdir, str) or not expected_subdir:
+        raise ResolutionError("expected conda subdir is invalid")
     try:
         completed = subprocess.run(
             (
@@ -2066,17 +2079,38 @@ def _conda_phase_packages(
         raise ResolutionError("conda package list is not an array")
     projected: list[dict[str, object]] = []
     for package in value:
-        if not isinstance(package, Mapping) or not {
-            "build_string",
-            "name",
-            "version",
-        } <= set(package):
+        if not isinstance(package, Mapping):
             raise ResolutionError("conda package list record is invalid")
+        channel = package.get("channel")
+        platform_name = package.get("platform")
+        build_string = package.get("build_string")
+        if not all(
+            isinstance(marker, str)
+            for marker in (channel, platform_name, build_string)
+        ):
+            raise ResolutionError("conda package list record markers are invalid")
+        name = package.get("name")
+        version = package.get("version")
+        if (
+            not isinstance(name, str)
+            or _CONDA_PACKAGE_NAME.fullmatch(name) is None
+            or not isinstance(version, str)
+            or _VERSION.fullmatch(version) is None
+        ):
+            raise ResolutionError("conda package list record identity is invalid")
+        if (channel, platform_name, build_string) == _CONDA_PYPI_MARKERS:
+            continue
+        if build_string == "pypi_0":
+            raise ResolutionError("conda package list record markers are inconsistent")
+        if channel != _CONDA_CHANNEL:
+            raise ResolutionError("conda package list record channel is invalid")
+        if platform_name not in {expected_subdir, "noarch"}:
+            raise ResolutionError("conda package list record platform is invalid")
         projected.append(
             {
-                "build": package["build_string"],
-                "name": package["name"],
-                "version": package["version"],
+                "build": build_string,
+                "name": name,
+                "version": version,
             }
         )
     return _conda_package_records(projected, require_base=True)
@@ -2555,13 +2589,14 @@ def capture_os_runtime(
     package_names = tuple(package_names)
     if not package_names or len(package_names) != len(set(package_names)):
         raise ResolutionError("Qt GL runtime package list is invalid")
+    queried_names = tuple(f"{name}:{expected_architecture}" for name in package_names)
     try:
         completed = subprocess.run(
             (
                 "dpkg-query",
                 "--show",
                 f"--showformat={_DPKG_QUERY_FORMAT}",
-                *package_names,
+                *queried_names,
             ),
             cwd=cwd,
             capture_output=True,
@@ -2577,21 +2612,28 @@ def capture_os_runtime(
 
     packages: list[dict[str, str]] = []
     lines = completed.stdout.splitlines()
-    if len(lines) != len(package_names):
-        raise ResolutionError("Qt GL runtime package query is incomplete")
-    for expected_name, line in zip(package_names, lines, strict=True):
+    records: dict[str, tuple[str, str, str]] = {}
+    for line in lines:
         fields = line.split("\t")
         if len(fields) != 4:
             raise ResolutionError("Qt GL runtime package query is malformed")
         status, name, version, architecture = fields
+        if name not in package_names or architecture != expected_architecture:
+            raise ResolutionError("Qt GL runtime package identity is invalid")
+        if name in records:
+            raise ResolutionError("Qt GL runtime package identity is invalid")
         if status != "ii ":
             raise ResolutionError("Qt GL runtime package is not installed")
-        if name != expected_name or architecture != expected_architecture:
-            raise ResolutionError("Qt GL runtime package identity is invalid")
+        records[name] = (status, version, architecture)
+
+    if set(records) != set(package_names):
+        raise ResolutionError("Qt GL runtime package query is incomplete")
+    for expected_name in package_names:
+        _status, version, architecture = records[expected_name]
         packages.append(
             {
                 "architecture": architecture,
-                "name": name,
+                "name": expected_name,
                 "status": _OS_RUNTIME_STATUS,
                 "version": _required_debian_version(
                     version, "Qt GL runtime package version"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -164,11 +165,25 @@ def test_conda_phase_packages_projects_conda_list_without_paths(
     module = importlib.import_module("scripts.capture_trial_resolution")
     conda_json = (
         b'[{"build_string":"20_gnu","name":"_openmp_mutex","version":"4.5",'
-        b'"channel":"conda-forge","prefix":"/private/prefix"},'
+        b'"channel":"conda-forge","platform":"linux-64",'
+        b'"prefix":"/private/prefix"},'
+        b'{"build_string":"h0f90c79_2","name":"icu","version":"78.3",'
+        b'"channel":"conda-forge","platform":"linux-64",'
+        b'"prefix":"/private/prefix"},'
         b'{"build_string":"h456_0","name":"python","version":"3.12.14",'
-        b'"channel":"conda-forge","prefix":"/private/prefix"},'
+        b'"channel":"conda-forge","platform":"linux-64",'
+        b'"prefix":"/private/prefix"},'
         b'{"build_string":"h123_0","name":"pip","version":"25.3",'
-        b'"channel":"conda-forge","prefix":"/private/prefix"}]'
+        b'"channel":"conda-forge","platform":"noarch",'
+        b'"prefix":"/private/prefix"},'
+        b'{"build_string":"pypi_0","name":"astropy-iers-data",'
+        b'"version":"0.2026.8.31.0.57.9","channel":"pypi",'
+        b'"platform":"pypi","prefix":"/private/prefix"},'
+        b'{"build_string":"pypi_0","name":"gwexpy-studio",'
+        b'"version":"0.1.0a1","channel":"pypi","platform":"pypi",'
+        b'"prefix":"/private/prefix"},'
+        b'{"build_string":"pypi_0","name":"numpy","version":"2.5.2",'
+        b'"channel":"pypi","platform":"pypi","prefix":"/private/prefix"}]'
     )
 
     def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
@@ -188,11 +203,148 @@ def test_conda_phase_packages_projects_conda_list_without_paths(
         conda_executable=Path("/opt/miniforge/bin/conda"),
         prefix=tmp_path / "prefix",
         cwd=tmp_path,
+        expected_subdir="linux-64",
     ) == [
         {"build": "20_gnu", "name": "_openmp_mutex", "version": "4.5"},
+        {"build": "h0f90c79_2", "name": "icu", "version": "78.3"},
         {"build": "h123_0", "name": "pip", "version": "25.3"},
         {"build": "h456_0", "name": "python", "version": "3.12.14"},
     ]
+
+
+@pytest.mark.parametrize("expected_subdir", ["linux-64", "linux-aarch64", "osx-arm64"])
+def test_conda_phase_packages_accepts_target_native_or_noarch_platforms(
+    expected_subdir: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = importlib.import_module("scripts.capture_trial_resolution")
+    records = [
+        {
+            "build_string": "h456_0",
+            "name": "python",
+            "version": "3.12.14",
+            "channel": "conda-forge",
+            "platform": expected_subdir,
+        },
+        {
+            "build_string": "h123_0",
+            "name": "pip",
+            "version": "25.3",
+            "channel": "conda-forge",
+            "platform": "noarch",
+        },
+    ]
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps(records).encode(), stderr=b""
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    assert module._conda_phase_packages(
+        conda_executable=Path("/opt/miniforge/bin/conda"),
+        prefix=tmp_path / "prefix",
+        cwd=tmp_path,
+        expected_subdir=expected_subdir,
+    ) == [
+        {"build": "h123_0", "name": "pip", "version": "25.3"},
+        {"build": "h456_0", "name": "python", "version": "3.12.14"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bad_record", "message"),
+    [
+        (
+            {
+                "build_string": "h0f90c79_2",
+                "name": "icu",
+                "version": "78.3",
+                "channel": "conda-forge",
+                "platform": "linux-aarch64",
+            },
+            "platform",
+        ),
+        (
+            {
+                "build_string": "h0f90c79_2",
+                "name": "icu",
+                "version": "78.3",
+                "channel": "untrusted-channel",
+                "platform": "linux-64",
+            },
+            "channel",
+        ),
+        (
+            {
+                "build_string": "not-pypi",
+                "name": "icu",
+                "version": "78.3",
+                "channel": "pypi",
+                "platform": "pypi",
+            },
+            "channel",
+        ),
+        (
+            {
+                "build_string": "pypi_0",
+                "name": "icu",
+                "version": "78.3",
+                "channel": "conda-forge",
+                "platform": "linux-64",
+            },
+            "inconsistent",
+        ),
+        (
+            {
+                "build_string": "h0f90c79_2",
+                "name": "icu",
+                "version": "78.3",
+                "channel": "conda-forge",
+            },
+            "markers",
+        ),
+    ],
+)
+def test_conda_phase_packages_rejects_unknown_or_inconsistent_markers(
+    bad_record: dict[str, object],
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("scripts.capture_trial_resolution")
+    records = [
+        {
+            "build_string": "h456_0",
+            "name": "python",
+            "version": "3.12.14",
+            "channel": "conda-forge",
+            "platform": "linux-64",
+        },
+        {
+            "build_string": "h123_0",
+            "name": "pip",
+            "version": "25.3",
+            "channel": "conda-forge",
+            "platform": "noarch",
+        },
+        bad_record,
+    ]
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps(records).encode(), stderr=b""
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    with pytest.raises(module.ResolutionError, match=message):
+        module._conda_phase_packages(
+            conda_executable=Path("/opt/miniforge/bin/conda"),
+            prefix=tmp_path / "prefix",
+            cwd=tmp_path,
+            expected_subdir="linux-64",
+        )
 
 
 def test_sha256_file_reports_the_exact_bootstrap_bytes(tmp_path: Path) -> None:

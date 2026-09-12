@@ -1170,8 +1170,8 @@ def test_resolution_captures_only_direct_qt_gl_runtime_packages(
         "dpkg-query",
         "--show",
         "--showformat=${db:Status-Abbrev}\\t${Package}\\t${Version}\\t${Architecture}\\n",
-        "libegl1",
-        "libgl1",
+        f"libegl1:{dpkg_architecture}",
+        f"libgl1:{dpkg_architecture}",
     )
     assert loaded == ["libEGL.so.1", "libGL.so.1"]
 
@@ -1185,7 +1185,7 @@ def test_schema4_resolution_captures_the_full_linux_qt_runtime_closure(
     architecture = "amd64"
     stdout = "".join(
         f"ii \t{name}\t1.0.0-1build1\t{architecture}\n"
-        for name in package_names
+        for name in sorted(package_names)
     )
     loaded: list[str] = []
 
@@ -1208,6 +1208,26 @@ def test_schema4_resolution_captures_the_full_linux_qt_runtime_closure(
     assert [item["name"] for item in runtime["packages"]] == list(package_names)
     assert runtime["packages"][-1]["architecture"] == "amd64"
     assert loaded == ["libEGL.so.1", "libGL.so.1"]
+
+
+def test_resolution_rejects_an_extra_multiarch_qt_gl_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second architecture record cannot be silently ignored."""
+    module = _resolution()
+    stdout = (
+        "ii \tlibegl1\t1.7.0-1build1\tamd64\n"
+        "ii \tlibgl1\t1.7.0-1build1\tamd64\n"
+        "ii \tlibegl1\t1.7.0-1build1\tarm64\n"
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=stdout),
+    )
+
+    with pytest.raises(module.ResolutionError, match="package identity"):
+        module.capture_os_runtime("x86_64", cwd=tmp_path)
 
 
 @pytest.mark.parametrize(
