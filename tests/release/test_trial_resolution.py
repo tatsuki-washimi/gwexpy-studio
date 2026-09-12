@@ -574,6 +574,22 @@ def test_capture_executes_the_sealed_git_p_gate_after_path_replacement(
         os.fstat(gate_fd)
 
 
+def test_capture_collector_rejects_a_syntactically_valid_unallowlisted_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Collection rejects unknown stage pairs without exposing their value."""
+    module = _resolution()
+    monkeypatch.setattr(
+        module,
+        "_read_gate_stage",
+        lambda _work_root: "consumer/syntactically-valid",
+    )
+
+    with pytest.raises(_gate().GateError, match="stage"):
+        module._collect_gate_stage(tmp_path)
+
+
 @pytest.fixture
 def trial_artifact(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     """Create a small, internally consistent trial-wheel evidence set."""
