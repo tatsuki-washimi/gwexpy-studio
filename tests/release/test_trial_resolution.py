@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -118,6 +119,223 @@ def test_macos_resolution_platform_adapter_rejects_wrong_host(
         )
 
 
+def test_resolution_reader_keeps_schema2_and_schema3_as_read_only_inputs() -> None:
+    module = _resolution()
+
+    for schema in (2, 3):
+        document = {"schema": schema, "legacy": "retained"}
+        assert module.read_resolution_document(_canonical_json(document)) == document
+
+
+def test_conda_resolution_projection_records_target_and_phase_conda_closures(
+    trial_artifact: tuple[Path, Path, Path, dict[str, str]],
+) -> None:
+    module = _resolution()
+    wheel, trial_manifest, source_manifest, _identity = trial_artifact
+    artifact = module.load_trial_artifact(
+        wheel=wheel,
+        trial_manifest=trial_manifest,
+        source_manifest=source_manifest,
+    )
+    report = {
+        "install": [
+            {
+                "download_info": {
+                    "archive_info": {"hashes": {"sha256": artifact.wheel_sha256}},
+                    "url": f"file://{wheel}",
+                },
+                "is_direct": True,
+                "is_yanked": False,
+                "metadata": {"name": "gwexpy-studio", "version": artifact.version},
+                },
+                {
+                    "download_info": {
+                        "archive_info": {"hashes": {"sha256": "a" * 64}},
+                        "url": "https://example.invalid/example-runtime-1.2.3-py3-none-any.whl",
+                    },
+                    "is_direct": False,
+                    "is_yanked": False,
+                    "metadata": {"name": "example-runtime", "version": "1.2.3"},
+                },
+            ],
+        "pip_version": "25.3",
+        "version": "1",
+    }
+    inspect = {
+        "installed": [
+            {"metadata": {"name": "example-runtime", "version": "1.2.3"}},
+            {"metadata": {"name": "gwexpy-studio", "version": artifact.version}},
+        ],
+        "pip_version": "25.3",
+        "version": "1",
+    }
+    conda_packages = [
+        {"build": "20_gnu", "name": "_openmp_mutex", "version": "4.5"},
+        {"build": "h123_0", "name": "pip", "version": "25.3"},
+        {"build": "h456_0", "name": "python", "version": "3.12.14"},
+    ]
+    gate = {
+        "architecture": "x86_64",
+        "checks": {name: True for name in _gate()._CHECK_NAMES},
+        "installed": {
+            "build_id": artifact.build_id,
+            "source_sha": artifact.source_sha,
+            "version": artifact.version,
+        },
+        "python_version": "3.12.14",
+        "schema": 3,
+        "status": "passed",
+    }
+    replay_report = {
+        "install": [report["install"][1]],
+        "pip_version": "25.3",
+        "version": "1",
+    }
+    replay_inspect = {
+        "installed": [inspect["installed"][0]],
+        "pip_version": "25.3",
+        "version": "1",
+    }
+    isolation = {
+        "checkout_on_sys_path": False,
+        "imports": ["gwexpy_studio", "gwexpy", "numpy", "PySide6"],
+        "no_user_site": True,
+        "python": "3.12",
+        "pythonpath": False,
+        "studio_visible": True,
+    }
+    replay_isolation = {
+        **isolation,
+        "imports": ["gwexpy", "numpy", "PySide6"],
+        "studio_visible": False,
+    }
+    projection = module.build_conda_resolution_projection(
+        artifact=artifact,
+        target_id="ubuntu24-x86_64",
+        machine="x86_64",
+        os_id="ubuntu",
+        os_version="24.04",
+        glibc_version="2.39",
+        os_runtime=_schema4_os_runtime(),
+        environment_manager={
+            "kind": "conda",
+            "requested_specs": ["python=3.12", "pip"],
+            "subdir": "linux-64",
+            "version": "25.7.0",
+        },
+        python_version="3.12.14",
+        pip_version="25.3",
+        phase_one_report=report,
+        phase_one_inspect=inspect,
+        phase_two_report=report,
+        phase_two_inspect=inspect,
+        phase_one_conda_packages=conda_packages,
+        phase_two_conda_packages=conda_packages,
+        phase_replay_report=replay_report,
+        phase_replay_inspect=replay_inspect,
+        phase_replay_conda_packages=conda_packages,
+        phase_one_import_isolation=isolation,
+        phase_two_import_isolation=isolation,
+        phase_replay_import_isolation=replay_isolation,
+        phase_one_report_bytes=_canonical_json(report),
+        phase_one_inspect_bytes=_canonical_json(inspect),
+        phase_two_report_bytes=_canonical_json(report),
+        phase_two_inspect_bytes=_canonical_json(inspect),
+        phase_replay_report_bytes=_canonical_json(replay_report),
+        phase_replay_inspect_bytes=_canonical_json(replay_inspect),
+        technical_gate=gate,
+    )
+
+    assert projection["schema"] == 4
+    assert projection["target_id"] == "ubuntu24-x86_64"
+    assert projection["environment_manager"] == {
+        "kind": "conda",
+        "requested_specs": ["python=3.12", "pip"],
+        "subdir": "linux-64",
+        "version": "25.7.0",
+    }
+    assert projection["phase_one"]["conda_packages"] == conda_packages
+    assert projection["phase_two"]["conda_packages"] == conda_packages
+    assert projection["phase_replay"]["conda_packages"] == conda_packages
+    assert projection["phase_replay"]["import_isolation"]["studio_visible"] is False
+
+
+def test_conda_resolution_projection_rejects_a_manager_for_another_target(
+    trial_artifact: tuple[Path, Path, Path, dict[str, str]],
+) -> None:
+    module = _resolution()
+    wheel, trial_manifest, source_manifest, _identity = trial_artifact
+    artifact = module.load_trial_artifact(
+        wheel=wheel,
+        trial_manifest=trial_manifest,
+        source_manifest=source_manifest,
+    )
+    with pytest.raises(module.ResolutionError, match="target|subdir"):
+        module.build_conda_resolution_projection(
+            artifact=artifact,
+            target_id="macos15-arm64",
+            machine="arm64",
+            os_id="ubuntu",
+            os_version="24.04",
+            glibc_version="2.39",
+            os_runtime=_os_runtime(),
+            environment_manager={
+                "kind": "conda",
+                "requested_specs": ["python=3.12", "pip"],
+                "subdir": "linux-64",
+                "version": "25.7.0",
+            },
+            python_version="3.12.14",
+            pip_version="25.3",
+            phase_one_report={},
+            phase_one_inspect={},
+            phase_two_report={},
+            phase_two_inspect={},
+            phase_one_conda_packages=[],
+            phase_two_conda_packages=[],
+        )
+
+
+@pytest.mark.parametrize("missing", [None, "python", "pip"])
+def test_persisted_conda_closure_requires_python_and_pip(
+    missing: str | None,
+) -> None:
+    """Schema-4 evidence cannot pass with an empty or incomplete base closure."""
+    records = [
+        {"build": "20_gnu", "name": "_openmp_mutex", "version": "4.5"},
+        {"build": "h123_0", "name": "pip", "version": "25.3"},
+        {"build": "h456_0", "name": "python", "version": "3.12.14"},
+    ]
+    if missing is None:
+        records = []
+    else:
+        records = [record for record in records if record["name"] != missing]
+
+    with pytest.raises(_resolution().ResolutionError, match="python|pip|empty"):
+        _resolution().validate_conda_package_records(records)
+
+
+def test_persisted_conda_closure_matches_top_level_python_and_pip_versions() -> None:
+    records = [
+        {"build": "h123_0", "name": "pip", "version": "25.3"},
+        {"build": "h456_0", "name": "python", "version": "3.12.14"},
+    ]
+
+    with pytest.raises(_resolution().ResolutionError, match="version"):
+        _resolution().validate_conda_package_records(
+            records,
+            python_version="3.12.15",
+            pip_version="25.3",
+        )
+
+    with pytest.raises(_resolution().ResolutionError, match="version"):
+        _resolution().validate_conda_package_records(
+            records,
+            python_version="3.12.14",
+            pip_version="25.4",
+        )
+
+
 def test_macos_resolution_projection_uses_schema3_without_linux_runtime(
     trial_artifact: tuple[Path, Path, Path, dict[str, str]],
 ) -> None:
@@ -158,7 +376,7 @@ def test_macos_resolution_projection_uses_schema3_without_linux_runtime(
             "version": artifact.version,
         },
         "python_version": "3.12.12",
-        "schema": 2,
+        "schema": 3,
         "status": "passed",
     }
 
@@ -208,6 +426,30 @@ def _os_runtime(machine: str = "x86_64") -> dict[str, object]:
         ],
         "required_libraries": ["libEGL.so.1", "libGL.so.1"],
     }
+
+
+def _schema4_os_runtime(machine: str = "x86_64") -> dict[str, object]:
+    """Return the expanded Linux Qt closure recorded only by resolution4."""
+    runtime = _os_runtime(machine)
+    architecture = {"x86_64": "amd64", "aarch64": "arm64"}[machine]
+    packages = runtime["packages"]
+    assert isinstance(packages, list)
+    packages.extend(
+        {
+            "architecture": architecture,
+            "name": name,
+            "status": "installed",
+            "version": "1.0.0-1build1",
+        }
+        for name in (
+            "libfontconfig1",
+            "libglib2.0-0t64",
+            "libdbus-1-3",
+            "libxkbcommon0",
+            "libzstd1",
+        )
+    )
+    return runtime
 
 
 def _canonical_json(value: object) -> bytes:
@@ -934,6 +1176,40 @@ def test_resolution_captures_only_direct_qt_gl_runtime_packages(
     assert loaded == ["libEGL.so.1", "libGL.so.1"]
 
 
+def test_schema4_resolution_captures_the_full_linux_qt_runtime_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema 4 records the upper package closure without changing legacy capture."""
+    module = _resolution()
+    package_names = module._SCHEMA4_OS_RUNTIME_PACKAGES
+    architecture = "amd64"
+    stdout = "".join(
+        f"ii \t{name}\t1.0.0-1build1\t{architecture}\n"
+        for name in package_names
+    )
+    loaded: list[str] = []
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=stdout),
+    )
+    monkeypatch.setattr(
+        module,
+        "ctypes",
+        SimpleNamespace(CDLL=lambda library: loaded.append(library)),
+        raising=False,
+    )
+
+    runtime = module.capture_os_runtime(
+        "x86_64", cwd=tmp_path, package_names=package_names
+    )
+
+    assert [item["name"] for item in runtime["packages"]] == list(package_names)
+    assert runtime["packages"][-1]["architecture"] == "amd64"
+    assert loaded == ["libEGL.so.1", "libGL.so.1"]
+
+
 @pytest.mark.parametrize(
     ("stdout", "machine", "load_error"),
     [
@@ -1040,6 +1316,13 @@ def test_resolution_requires_ubuntu_2404_os_release(tmp_path: Path) -> None:
     with pytest.raises(_resolution().ResolutionError, match="Ubuntu 24.04"):
         _resolution()._ubuntu_release(release)
 
+    release.write_text('ID=debian\nVERSION_ID="13"\n', encoding="utf-8")
+    assert _resolution()._debian_release(release) == ("debian", "13")
+
+    release.write_text('ID=debian\nVERSION_ID="12"\n', encoding="utf-8")
+    with pytest.raises(_resolution().ResolutionError, match="Debian 13"):
+        _resolution()._debian_release(release)
+
 
 def test_resolution_rejects_gate_identity_that_disagrees_with_the_wheel(
     trial_artifact: tuple[Path, Path, Path, dict[str, str]],
@@ -1082,7 +1365,7 @@ def test_resolution_rejects_gate_identity_that_disagrees_with_the_wheel(
             "version": artifact.version,
         },
         "python_version": "3.12.12",
-        "schema": 2,
+        "schema": 3,
         "status": "passed",
     }
 
@@ -1511,6 +1794,8 @@ def test_resolution_subprocess_environment_cannot_inherit_another_python_prefix(
     monkeypatch.setenv("PIP_INDEX_URL", "https://user:secret@example.invalid/simple")
     monkeypatch.setenv("PYTHONHOME", "/private/python")
     monkeypatch.setenv("PYTHONPATH", "/private/checkout/src")
+    monkeypatch.setenv("PYTHONNOUSERSITE", "0")
+    monkeypatch.setenv("PYTHONUSERBASE", "/private/userbase")
     monkeypatch.setenv("VIRTUAL_ENV", "/private/venv")
 
     environment = _resolution()._subprocess_environment()
@@ -1523,6 +1808,254 @@ def test_resolution_subprocess_environment_cannot_inherit_another_python_prefix(
         "VIRTUAL_ENV",
     ):
         assert name not in environment
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert "PYTHONUSERBASE" not in environment
+
+
+def test_conda_python_isolation_rejects_a_fake_user_site(tmp_path: Path) -> None:
+    """A benign user-site sentinel cannot become visible to a fresh child."""
+    _resolution()._verify_python_isolation(Path(sys.executable), cwd=tmp_path)
+
+
+def test_conda_python_isolation_requires_the_subprocess_user_site_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe fails when the shared subprocess environment is weakened."""
+    module = _resolution()
+    environment = os.environ.copy()
+    environment.pop("PYTHONUSERBASE", None)
+    environment["PYTHONNOUSERSITE"] = "0"
+    monkeypatch.setattr(module, "_subprocess_environment", lambda: environment)
+
+    with pytest.raises(module.ResolutionError, match="user-site isolation"):
+        module._verify_python_isolation(Path(sys.executable), cwd=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "target_id",
+    [
+        "ubuntu24-x86_64",
+        "debian13-x86_64",
+        "wsl2-ubuntu24",
+        "macos15-arm64",
+    ],
+)
+def test_every_new_target_requires_explicit_conda_backend(target_id: str) -> None:
+    module = _resolution()
+
+    with pytest.raises(module.ResolutionError, match="conda backend"):
+        module.capture_trial_resolution(
+            wheel=Path("wheel.whl"),
+            trial_manifest=Path("TRIAL-MANIFEST.json"),
+            source_manifest=Path("SOURCE-MANIFEST.json"),
+            staging_manifest=Path("STAGING-MANIFEST.json"),
+            checkout_root=Path("checkout"),
+            output_directory=Path("output"),
+            trial_target_id=target_id,
+        )
+
+
+def test_conda_backend_requires_an_explicit_trial_target() -> None:
+    module = _resolution()
+
+    with pytest.raises(module.ResolutionError, match="explicit trial target"):
+        module.capture_trial_resolution(
+            wheel=Path("wheel.whl"),
+            trial_manifest=Path("TRIAL-MANIFEST.json"),
+            source_manifest=Path("SOURCE-MANIFEST.json"),
+            staging_manifest=Path("STAGING-MANIFEST.json"),
+            checkout_root=Path("checkout"),
+            output_directory=Path("output"),
+            environment_backend="conda",
+            conda_executable=Path("/opt/miniforge/bin/conda"),
+        )
+
+
+def test_conda_backend_requires_an_explicit_executable() -> None:
+    module = _resolution()
+
+    with pytest.raises(module.ResolutionError, match="explicit conda executable"):
+        module.capture_trial_resolution(
+            wheel=Path("wheel.whl"),
+            trial_manifest=Path("TRIAL-MANIFEST.json"),
+            source_manifest=Path("SOURCE-MANIFEST.json"),
+            staging_manifest=Path("STAGING-MANIFEST.json"),
+            checkout_root=Path("checkout"),
+            output_directory=Path("output"),
+            trial_target_id="ubuntu24-x86_64",
+            environment_backend="conda",
+        )
+
+
+def test_conda_manager_query_binds_conda_info_platform_to_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _resolution()
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        assert command == ("/opt/miniforge/bin/conda", "info", "--json")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=b'{"conda_version":"26.7.2","platform":"linux-64"}',
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    assert module._conda_environment_manager(
+        conda_executable=Path("/opt/miniforge/bin/conda"),
+        target_id="ubuntu24-x86_64",
+        architecture="x86_64",
+        cwd=tmp_path,
+    ) == {
+        "kind": "conda",
+        "requested_specs": ["python=3.12", "pip"],
+        "subdir": "linux-64",
+        "version": "26.7.2",
+    }
+
+
+def test_fresh_conda_phase_uses_conda_create_and_returns_prefix_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _resolution()
+    prefix = tmp_path / "conda-phase"
+    calls: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], *, cwd: Path) -> None:
+        calls.append(command)
+        assert cwd == tmp_path
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "bin" / "python3.12").write_bytes(b"fake python")
+        (prefix / "bin" / "python3.12").chmod(0o755)
+        (prefix / "bin" / "python").symlink_to("python3.12")
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(
+        module, "_verify_python_isolation", lambda *args, **kwargs: None
+    )
+
+    phase = module._fresh_conda_phase(
+        prefix,
+        conda_executable=Path("/opt/miniforge/bin/conda"),
+        target_id="ubuntu24-x86_64",
+        architecture="x86_64",
+    )
+
+    assert phase.python == prefix / "bin" / "python"
+    assert len(calls) == 1
+    assert calls[0][0:2] == ("/opt/miniforge/bin/conda", "create")
+    assert "venv" not in calls[0]
+
+
+def test_fresh_conda_phase_accepts_a_prefix_python_symlink_and_probes_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conda-style in-prefix interpreter link passes the real isolation probe."""
+    module = _resolution()
+    prefix = tmp_path / "conda-phase"
+
+    def run(_command: tuple[str, ...], *, cwd: Path) -> None:
+        assert cwd == tmp_path
+        (prefix / "bin").mkdir(parents=True)
+        interpreter = prefix / "bin" / "python3.12"
+        shutil.copyfile(sys.executable, interpreter)
+        interpreter.chmod(0o755)
+        (prefix / "bin" / "python").symlink_to("python3.12")
+
+    monkeypatch.setattr(module, "_run", run)
+
+    phase = module._fresh_conda_phase(
+        prefix,
+        conda_executable=Path("/opt/miniforge/bin/conda"),
+        target_id="ubuntu24-x86_64",
+        architecture="x86_64",
+    )
+
+    assert phase.python.is_symlink()
+    assert phase.python.resolve() == (prefix / "bin" / "python3.12").resolve()
+
+
+def test_fresh_conda_phase_rejects_python_link_outside_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _resolution()
+    prefix = tmp_path / "conda-phase"
+    outside = tmp_path / "outside-python"
+
+    def run(_command: tuple[str, ...], *, cwd: Path) -> None:
+        assert cwd == tmp_path
+        (prefix / "bin").mkdir(parents=True)
+        outside.write_bytes(b"outside python")
+        outside.chmod(0o755)
+        (prefix / "bin" / "python").symlink_to(outside)
+
+    monkeypatch.setattr(module, "_run", run)
+
+    with pytest.raises(module.ResolutionError, match="prefix"):
+        module._fresh_conda_phase(
+            prefix,
+            conda_executable=Path("/opt/miniforge/bin/conda"),
+            target_id="ubuntu24-x86_64",
+            architecture="x86_64",
+        )
+
+
+def test_fresh_conda_phase_passes_phase_one_closure_to_constructor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _resolution()
+    prefix = tmp_path / "conda-phase"
+    calls: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], *, cwd: Path) -> None:
+        calls.append(command)
+        assert cwd == tmp_path
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "bin" / "python3.12").write_bytes(b"fake python")
+        (prefix / "bin" / "python3.12").chmod(0o755)
+        (prefix / "bin" / "python").symlink_to("python3.12")
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(
+        module, "_verify_python_isolation", lambda *args, **kwargs: None
+    )
+
+    module._fresh_conda_phase(
+        prefix,
+        conda_executable=Path("/opt/miniforge/bin/conda"),
+        target_id="ubuntu24-x86_64",
+        architecture="x86_64",
+        package_records=[
+            {"build": "h456_0", "name": "python", "version": "3.12.14"},
+            {"build": "20_gnu", "name": "_openmp_mutex", "version": "4.5"},
+        ],
+    )
+
+    assert calls[0][-2:] == ("_openmp_mutex=4.5=20_gnu", "python=3.12.14=h456_0")
+
+
+def test_replay_install_command_names_only_runtime_packages(tmp_path: Path) -> None:
+    module = _resolution()
+    command = module.pip_runtime_install_command(
+        python=tmp_path / "phase-replay" / "bin" / "python",
+        package_names=("gwpy", "numpy"),
+        constraints=tmp_path / "runtime-constraints.txt",
+        report_path=tmp_path / "replay-report.json",
+    )
+
+    assert command[:4] == (
+        str(tmp_path / "phase-replay" / "bin" / "python"),
+        "-m",
+        "pip",
+        "install",
+    )
+    assert "gwpy" in command
+    assert "numpy" in command
+    assert "gwexpy-studio" not in command
+    assert command[command.index("-c") + 1] == str(
+        tmp_path / "runtime-constraints.txt"
+    )
 
 
 def test_resolution_rejects_a_trial_manifest_with_the_wrong_source_digest(
@@ -2077,7 +2610,7 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
                 "version": identity["version"],
             },
             "python_version": expected_python_version,
-            "schema": 2,
+            "schema": 3,
             "status": "passed",
         },
     )
@@ -2137,7 +2670,7 @@ def test_capture_reinstalls_in_two_fresh_venvs_and_persists_redacted_evidence(
             "version": identity["version"],
         },
         "python_version": expected_python_version,
-        "schema": 2,
+        "schema": 3,
         "status": "passed",
     }
     assert document["staging_manifest_sha256"] == _sha256(
@@ -2311,3 +2844,19 @@ def test_resolution_cli_binds_the_checkout_to_the_capture(
     )
     assert arguments_seen["checkout_root"] == checkout
     assert arguments_seen["staging_manifest"] == tmp_path / "STAGING-MANIFEST.json"
+
+
+def test_capture_output_allows_existing_parent_but_requires_new_child(
+    tmp_path: Path,
+) -> None:
+    """Hosted mounts may provide a parent while each capture owns a fresh child."""
+    checkout = tmp_path / "public-p"
+    checkout.mkdir()
+    parent = tmp_path / "capture-output"
+    parent.mkdir()
+    output = parent / "qualification"
+
+    assert _resolution()._trial_output_directory(output, checkout) == output
+    output.mkdir()
+    with pytest.raises(_resolution()._TrialBuildError, match="already exist"):
+        _resolution()._trial_output_directory(output, checkout)

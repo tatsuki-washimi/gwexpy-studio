@@ -11,6 +11,7 @@ import ast
 import importlib
 import inspect
 import json
+import os
 import signal
 import sys
 import time
@@ -315,6 +316,8 @@ def test_gate_environment_isolated_and_result_is_bounded_path_free(
         "GWEXPY_STUDIO_IO_CAPABILITIES": "/private/forged-policy.json",
         "HOME": "/private/home",
         "PYTHONPATH": "/private/checkout/src",
+        "PYTHONNOUSERSITE": "0",
+        "PYTHONUSERBASE": "/private/userbase",
         "XDG_CACHE_HOME": "/old/cache",
     }
 
@@ -340,6 +343,8 @@ def test_gate_environment_isolated_and_result_is_bounded_path_free(
     )
 
     assert "PYTHONPATH" not in environment
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert "PYTHONUSERBASE" not in environment
     assert "GWEXPY_STUDIO_IO_CAPABILITIES" not in environment
     assert environment["QT_QPA_PLATFORM"] == "offscreen"
     assert environment["MPLBACKEND"] == "Agg"
@@ -2297,6 +2302,16 @@ def test_shared_memory_cleanup_probe_uses_reattach_not_dev_shm() -> None:
     assert _gate().shared_memory_cleanup_probe("trialgate-") is True
 
 
+def test_generated_shm_names_fit_darwin_kernel_budget() -> None:
+    """The portable run, phase, and cleanup names fit Darwin's 30-byte cap."""
+    gate = _gate()
+    run_prefix = gate._new_shm_run_prefix()
+    assert len(run_prefix.encode("ascii")) == 13
+    assert len(f"{run_prefix}n".encode("ascii")) == 14
+    assert len(f"{run_prefix}r".encode("ascii")) == 14
+    assert len(gate._new_shm_probe_name(run_prefix).encode("ascii")) == 30
+
+
 def test_gate_result_reader_requires_the_exact_bounded_success_schema() -> None:
     """The resolver accepts only a complete, internally consistent gate record."""
     checks = {name: True for name in _gate()._CHECK_NAMES}
@@ -2311,7 +2326,7 @@ def test_gate_result_reader_requires_the_exact_bounded_success_schema() -> None:
             "version": _identity()["version"],
         },
         "python_version": "3.12.12",
-        "schema": 2,
+        "schema": 3,
         "status": "passed",
     }
 
@@ -2337,6 +2352,7 @@ def test_gate_command_uses_isolated_venv_python_and_binds_private_paths(
         checkout_root=checkout,
         work_root=work_root,
         result_path=result,
+        native_qt=True,
     )
 
     assert command[:3] == (str(python), "-I", "-c")
@@ -2346,13 +2362,14 @@ def test_gate_command_uses_isolated_venv_python_and_binds_private_paths(
     assert command[command.index("--checkout") + 1] == str(checkout)
     assert command[command.index("--work-root") + 1] == str(work_root)
     assert command[command.index("--result") + 1] == str(result)
+    assert "--native-qt" in command
 
 
 def test_external_recovery_gate_runs_a_crashing_producer_then_a_fresh_consumer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Recovery qualification uses two isolated phase-two launcher processes."""
+    """Normal, export-crash, and recovery phases use isolated launcher processes."""
     checkout = tmp_path / "public-p"
     work_root = tmp_path / "private-work"
     phase_python = tmp_path / "phase-two" / "bin" / "python"
@@ -2388,10 +2405,13 @@ def test_external_recovery_gate_runs_a_crashing_producer_then_a_fresh_consumer(
         gate_fd=gate_fd,
         phase_python=phase_python,
         work_root=work_root,
+        native_qt=True,
+        parent_shm_prefix="trialgate-unique-",
     )
 
     phase_commands = [command for command in seen if "--phase" in command]
     assert [command[command.index("--phase") + 1] for command in phase_commands] == [
+        "normal",
         "producer",
         "consumer",
     ]
@@ -2403,7 +2423,8 @@ def test_external_recovery_gate_runs_a_crashing_producer_then_a_fresh_consumer(
     )
     assert all(command[4] == str(gate_fd) for command in phase_commands)
     assert "--project" not in phase_commands[0]
-    assert phase_commands[1][phase_commands[1].index("--project") + 1] == str(
+    assert "--project" not in phase_commands[1]
+    assert phase_commands[2][phase_commands[2].index("--project") + 1] == str(
         work_root / "trial.gwxproj"
     )
     assert all(
@@ -2414,11 +2435,58 @@ def test_external_recovery_gate_runs_a_crashing_producer_then_a_fresh_consumer(
             "crop",
             "asd",
             "save_project",
+            "normal_close_reopen",
+            "io_read",
+            "io_refusal",
             "project_reopen",
             "recovery",
             "worker_exit",
         )
     )
+
+
+def test_external_recovery_gate_preserves_native_qt_and_derives_phase_prefixes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "public-p"
+    work_root = tmp_path / "private-work"
+    phase_python = tmp_path / "phase-two" / "bin" / "python"
+    checkout.mkdir()
+    work_root.mkdir()
+    environments: list[dict[str, str]] = []
+
+    def fake_run(command: Sequence[str], **kwargs: object) -> SimpleNamespace:
+        values = tuple(command)
+        environments.append(dict(kwargs["env"]))
+        phase = values[values.index("--phase") + 1]
+        if phase == "producer":
+            (work_root / "trial.gwxproj").write_text("saved", encoding="utf-8")
+            (work_root / "python-export.py").write_text(
+                "print('export')\n", encoding="utf-8"
+            )
+        return SimpleNamespace(returncode=-signal.SIGKILL if phase == "producer" else 0)
+
+    monkeypatch.setattr(
+        _gate(), "subprocess", SimpleNamespace(run=fake_run), raising=False
+    )
+    _gate().run_external_recovery_gate(
+        checks={name: False for name in _gate()._CHECK_NAMES},
+        checkout=checkout,
+        gate_fd=37,
+        phase_python=phase_python,
+        work_root=work_root,
+        native_qt=True,
+        parent_shm_prefix="g0123456789ab",
+    )
+
+    assert [item["GWEXPY_STUDIO_SHM_PREFIX"] for item in environments] == [
+        "g0123456789abn",
+        "g0123456789abr",
+        "g0123456789abr",
+    ]
+    assert all(len(item["GWEXPY_STUDIO_SHM_PREFIX"]) <= 14 for item in environments)
+    assert all("QT_QPA_PLATFORM" not in item for item in environments)
 
 
 def test_phase_main_runs_the_producer_without_a_final_gate_result(
@@ -2466,13 +2534,15 @@ def test_external_recovery_gate_rejects_a_crashed_producer_without_saved_project
     checkout.mkdir()
     work_root.mkdir()
 
+    def fake_run(command: Sequence[str], **_kwargs: object) -> SimpleNamespace:
+        values = tuple(command)
+        phase = values[values.index("--phase") + 1]
+        return SimpleNamespace(
+            returncode=0 if phase == "normal" else -signal.SIGKILL
+        )
+
     monkeypatch.setattr(
-        _gate(),
-        "subprocess",
-        SimpleNamespace(
-            run=lambda *_args, **_kwargs: SimpleNamespace(returncode=-signal.SIGKILL)
-        ),
-        raising=False,
+        _gate(), "subprocess", SimpleNamespace(run=fake_run), raising=False
     )
 
     with pytest.raises(_gate().GateError, match="did not save"):
@@ -2482,4 +2552,229 @@ def test_external_recovery_gate_rejects_a_crashed_producer_without_saved_project
             gate_fd=gate_fd,
             phase_python=tmp_path / "phase-two" / "bin" / "python",
             work_root=work_root,
+            parent_shm_prefix="trialgate-unique-",
+        )
+
+
+def test_new_gate_result_records_normal_replay_and_io_as_independent_checks() -> None:
+    gate = _gate()
+
+    assert {
+        "normal_close_reopen",
+        "export_numeric_replay",
+        "io_read",
+        "io_refusal",
+    } <= set(gate._CHECK_NAMES)
+    encoded = gate.gate_result_json(
+        {name: True for name in gate._CHECK_NAMES}, installed=_identity()
+    )
+
+    document = json.loads(encoded)
+    assert document["schema"] == 3
+    assert document["status"] == "passed"
+    assert gate.read_gate_result(encoded)["schema"] == 3
+
+
+def test_gate_result_reader_keeps_historical_schema2_bytes_readable() -> None:
+    gate = _gate()
+    legacy_names = (
+        "launcher_import",
+        "welcome",
+        "try_sample",
+        "crop",
+        "asd",
+        "save_project",
+        "project_reopen",
+        "recovery",
+        "worker_exit",
+        "shared_memory_cleanup",
+    )
+    legacy = {
+        "architecture": "x86_64",
+        "checks": {name: True for name in legacy_names},
+        "installed": {
+            "build_id": _identity()["build_id"],
+            "source_sha": _identity()["source_sha"],
+            "version": _identity()["version"],
+        },
+        "python_version": _identity()["python_version"],
+        "schema": 2,
+        "status": "passed",
+    }
+
+    assert gate.read_gate_result(
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
+    ) == legacy
+
+
+def test_normal_phase_is_a_separate_launcher_phase(tmp_path: Path) -> None:
+    gate = _gate()
+    command = gate._phase_command(
+        phase="normal",
+        python=tmp_path / "phase-two" / "bin" / "python",
+        gate_fd=37,
+        checkout=tmp_path / "public-p",
+        work_root=tmp_path / "private-work",
+    )
+
+    assert command[command.index("--phase") + 1] == "normal"
+    assert "--project" not in command
+
+
+def _replay_reference() -> dict[str, object]:
+    return {
+        "schema": 1,
+        "time_series": {
+            "object_id": "obj-ts",
+            "kind": "TimeSeries",
+            "values": [1.0, 2.0],
+            "unit": "m",
+            "t0": 10.0,
+            "dt": 0.5,
+            "times": [10.0, 10.5],
+        },
+        "frequency_series": {
+            "object_id": "obj-asd",
+            "kind": "FrequencySeries",
+            "values": [3.0, 4.0],
+            "unit": "m / Hz**0.5",
+            "f0": 1.0,
+            "df": 0.25,
+            "frequencies": [1.0, 1.25],
+        },
+    }
+
+
+def _replay_namespace() -> dict[str, object]:
+    return {
+        "obj_ts": type("TimeSeries", (), {
+            "value": [1.0, 2.0],
+            "unit": "m",
+            "t0": SimpleNamespace(to_value=lambda _unit: 10.0),
+            "dt": SimpleNamespace(to_value=lambda _unit: 0.5),
+            "times": SimpleNamespace(to_value=lambda _unit: [10.0, 10.5]),
+        })(),
+        "obj_asd": type("FrequencySeries", (), {
+            "value": [3.0, 4.0],
+            "unit": "m / Hz**0.5",
+            "f0": SimpleNamespace(to_value=lambda _unit: 1.0),
+            "df": SimpleNamespace(to_value=lambda _unit: 0.25),
+            "frequencies": SimpleNamespace(to_value=lambda _unit: [1.0, 1.25]),
+        })(),
+    }
+
+
+def test_export_replay_validator_rejects_wrong_targets_values_units_and_axes() -> None:
+    gate = _gate()
+    reference = _replay_reference()
+
+    gate.validate_export_replay_namespace(_replay_namespace(), reference)
+    for mutation, expected in (
+        (lambda value: value.pop("obj_ts"), "target"),
+        (
+            lambda value: value["obj_ts"].value.__setitem__(0, 9.0),
+            "value",
+        ),
+        (lambda value: setattr(value["obj_ts"], "unit", "s"), "unit"),
+        (
+            lambda value: setattr(
+                value["obj_asd"].frequencies,
+                "to_value",
+                lambda _unit: [1.0, 1.5],
+            ),
+            "axis",
+        ),
+        (
+            lambda value: setattr(
+                value["obj_ts"].t0,
+                "to_value",
+                lambda _unit: 11.0,
+            ),
+            "axis",
+        ),
+        (
+            lambda value: setattr(
+                value["obj_asd"].f0,
+                "to_value",
+                lambda _unit: 1.5,
+            ),
+            "axis",
+        ),
+    ):
+        namespace = _replay_namespace()
+        mutation(namespace)
+        with pytest.raises(gate.GateError, match=expected):
+            gate.validate_export_replay_namespace(namespace, reference)
+
+
+def test_export_replay_snapshot_rejects_t0_and_f0_mutations() -> None:
+    gate = _gate()
+    reference = _replay_reference()
+    observed = {
+        key: {
+            "kind": value["kind"],
+            "values": value["values"],
+            "unit": value["unit"],
+            "t0": value.get("t0"),
+            "dt": value.get("dt"),
+            "times": value.get("times"),
+            "f0": value.get("f0"),
+            "df": value.get("df"),
+            "frequencies": value.get("frequencies"),
+        }
+        for key, value in reference.items()
+        if key != "schema"
+    }
+    observed["time_series"].pop("f0")
+    observed["time_series"].pop("df")
+    observed["time_series"].pop("frequencies")
+    observed["frequency_series"].pop("t0")
+    observed["frequency_series"].pop("dt")
+    observed["frequency_series"].pop("times")
+    gate._validate_replay_snapshot(observed, reference)
+    for key, origin in (("time_series", "t0"), ("frequency_series", "f0")):
+        mutated = json.loads(json.dumps(observed))
+        mutated[key][origin] += 1.0
+        with pytest.raises(gate.GateError, match="axis"):
+            gate._validate_replay_snapshot(mutated, reference)
+
+
+def test_export_replay_driver_runs_a_real_studio_free_python_script(
+    tmp_path: Path,
+) -> None:
+    """The driver executes runpy in the prepared third prefix, not the checkout."""
+    gate = _gate()
+    replay_python_value = os.environ.get("GWEXPY_STUDIO_REPLAY_PYTHON")
+    if replay_python_value is None or not Path(replay_python_value).is_file():
+        pytest.skip("prepared Studio-free replay prefix is unavailable")
+    replay_python = Path(replay_python_value)
+    (tmp_path / "python-export.py").write_text(
+        "import numpy as np\n"
+        "from gwexpy.timeseries import TimeSeries\n"
+        "from gwexpy.frequencyseries import FrequencySeries\n"
+        "obj_ts = TimeSeries(np.array([1., 2.]), t0=10., dt=.5, unit='m')\n"
+        "obj_asd = FrequencySeries(\n"
+        "    np.array([3., 4.]), f0=1., df=.25, unit='m / Hz**0.5'\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "export-reference.json").write_text(
+        json.dumps(_replay_reference()), encoding="utf-8"
+    )
+
+    gate._run_export_replay(
+        replay_python=replay_python,
+        checkout=Path(__file__).resolve().parents[2],
+        work_root=tmp_path,
+    )
+
+    assert (tmp_path / "python-replay.json").is_file()
+
+
+def test_export_replay_validator_rejects_studio_visibility() -> None:
+    gate = _gate()
+
+    with pytest.raises(gate.GateError, match="Studio"):
+        gate.validate_export_replay_namespace(
+            _replay_namespace(), _replay_reference(), studio_visible=True
         )

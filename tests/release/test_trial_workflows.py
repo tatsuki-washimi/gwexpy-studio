@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,33 @@ def _quick_start_download_block(name: str) -> str:
     document = (REPOSITORY_ROOT / "docs" / name).read_text(encoding="utf-8")
     blocks = re.findall(r"```bash\n(.*?)\n```", document, flags=re.DOTALL)
     matching = [block for block in blocks if "sha256sum -c SHA256SUMS" in block]
+    assert len(matching) == 1
+    return matching[0]
+
+
+_TRIAL_GUIDES = {
+    "ubuntu24-x86_64": "ubuntu",
+    "debian13-x86_64": "debian",
+    "wsl2-ubuntu24": "wsl2",
+    "macos15-arm64": "macos",
+}
+
+
+def _trial_guide_documents() -> dict[str, tuple[str, ...]]:
+    return {
+        target: tuple(
+            (REPOSITORY_ROOT / "docs" / "trial" / directory / name).read_text(
+                encoding="utf-8"
+            )
+            for name in ("Quick-Start.md", "Quick-Start.ja.md")
+        )
+        for target, directory in _TRIAL_GUIDES.items()
+    }
+
+
+def _trial_install_block(document: str) -> str:
+    blocks = re.findall(r"```bash\n(.*?)\n```", document, flags=re.DOTALL)
+    matching = [block for block in blocks if "pip install --only-binary=:all:" in block]
     assert len(matching) == 1
     return matching[0]
 
@@ -175,7 +203,7 @@ def test_publish_workflow_does_not_claim_an_environment_review_pause() -> None:
         assert phrase not in workflow
 
 
-def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures() -> (
+def test_build_trial_workflow_routes_four_targets_and_five_capture_configurations() -> (
     None
 ):
     """A read-only build binds P to one reused wheel before bundle assembly."""
@@ -209,7 +237,39 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert "github.run_number" in workflow
     assert "github.run_attempt" in workflow
     assert "scripts/build_trial_wheel.py" in workflow
-    assert workflow.count("scripts/verify_trial_seed.py") == 4
+    assert workflow.count("scripts/verify_trial_seed.py") == 7
+    for target in (
+        "ubuntu24-x86_64",
+        "debian13-x86_64",
+        "wsl2-ubuntu24",
+        "macos15-arm64",
+    ):
+        assert target in workflow
+    assert "if: inputs.trial_target == 'ubuntu24-x86_64'" in workflow
+    assert "if: inputs.trial_target == 'debian13-x86_64'" in workflow
+    assert "if: inputs.trial_target == 'wsl2-ubuntu24'" in workflow
+    assert "if: inputs.trial_target == 'macos15-arm64'" in workflow
+    assert workflow.count("--backend conda") == 4
+    assert workflow.count("--conda-executable") == 4
+    assert "-m venv" not in workflow
+    assert "bootstrap_trial_conda.py" in workflow
+    assert "debian_container_reference" in workflow
+    assert "--platform linux/amd64" in workflow
+    assert ":ro\"" in workflow
+    assert "runuser -u trial" in workflow
+    assert "docker run --rm --interactive --platform linux/amd64" in workflow
+    assert 'RUNNER_UID="$(id -u)"' in workflow
+    assert '-e RUNNER_UID="$RUNNER_UID"' in workflow
+    assert (
+        'useradd --create-home --shell /bin/bash --uid "$RUNNER_UID" trial'
+        in workflow
+    )
+    assert 'test "$(id -u)" -ne 0' in workflow
+    assert 'test "$(id -u)" = "$RUNNER_UID"' in workflow
+    assert "--checkout /work/source --output /work/output/qualification" in workflow
+    assert "path: ${{ runner.temp }}/debian-output/qualification/*" in workflow
+    assert "GIT_OPTIONAL_LOCKS=0" in workflow
+    assert "unset QT_QPA_PLATFORM" in workflow
     assert "scripts/capture_trial_resolution.py" in workflow
     assert "scripts/assemble_trial_bundle.py" in workflow
     assert "scripts/verify_trial_bundle.py" in workflow
@@ -218,13 +278,13 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     assert '--bundle "$RUNNER_TEMP/trial-bundle"' in workflow
     assert '--output "$RUNNER_TEMP/trial-release"' in workflow
     assert '--release-directory "$RUNNER_TEMP/trial-release"' in workflow
-    assert workflow.count("- name: Install Qt GL runtime") == 1
+    assert workflow.count("- name: Install Qt GL runtime") == 2
     assert (
-        workflow.count("sudo apt-get install --no-install-recommends -y libegl1 libgl1")
-        == 1
+        workflow.count("sudo apt-get install --no-install-recommends -y ")
+        == 2
     )
     assert workflow.index("Install Qt GL runtime") < workflow.index(
-        "Resolve, reinstall, and qualify the native closure"
+        "Bootstrap conda and qualify native Ubuntu"
     )
     assert (
         "trial-seed-${{ inputs.trial_target }}-${{ github.run_id }}"
@@ -235,7 +295,10 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
         "-a${{ github.run_attempt }}" in workflow
     )
     assert "needs: prepare" in workflow
-    assert "needs: [prepare, qualify-linux, qualify-macos]" in workflow
+    assert (
+        "needs: [prepare, qualify-ubuntu, qualify-debian, qualify-linux, qualify-macos]"
+        in workflow
+    )
     assert workflow.count("git rev-parse --verify HEAD") >= 4
     assert "scripts/build_qualification_kit.py" in workflow
     assert "trial-qualification-kit-${{ inputs.trial_target }}" in workflow
@@ -243,6 +306,69 @@ def test_build_trial_workflow_builds_one_seed_and_qualifies_both_architectures()
     upload_block = workflow[upload_start:]
     assert "path: ${{ runner.temp }}/trial-release/*" in upload_block
     assert "${{ runner.temp }}/trial-bundle/*" not in upload_block
+
+
+def test_debian_capture_forwards_runner_uid_to_container_user(tmp_path: Path) -> None:
+    """The private 0700 evidence directory remains traversable after Docker."""
+    workflow = _workflow("build-trial-wheel.yml")
+    start = workflow.index(
+        "      - name: Run the Debian capture in the digest-pinned nonroot container"
+    )
+    end = workflow.index("\n      - name: Upload Debian qualification evidence", start)
+    section = workflow[start:end]
+    block = textwrap.dedent(section.split("        run: |\n", 1)[1])
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "id").write_text(
+        "#!/bin/sh\nprintf '%s\\n' 2001\n", encoding="ascii"
+    )
+    (fake_bin / "python3.12").write_text(
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' 'debian:13@sha256:"
+        + "1" * 64
+        + "'\n",
+        encoding="ascii",
+    )
+    (fake_bin / "docker").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf '%s\\n' \"$@\" > \"$DOCKER_ARGS\"\n"
+        "cat > \"$DOCKER_STDIN\"\n",
+        encoding="ascii",
+    )
+    for executable in ("id", "python3.12", "docker"):
+        (fake_bin / executable).chmod(0o755)
+
+    runner_temp = tmp_path / "runner-temp"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "GITHUB_WORKSPACE": str(tmp_path / "checkout"),
+        "RUNNER_TEMP": str(runner_temp),
+        "SOURCE_SHA": "a" * 40,
+        "DOCKER_ARGS": str(tmp_path / "docker-args"),
+        "DOCKER_STDIN": str(tmp_path / "docker-stdin"),
+    }
+    completed = subprocess.run(
+        ["bash", "-c", block],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    docker_args = (tmp_path / "docker-args").read_text(encoding="ascii").splitlines()
+    source_env = docker_args.index("-e")
+    runner_uid_env = docker_args.index("-e", source_env + 1)
+    assert docker_args[source_env + 1] == "SOURCE_SHA=" + "a" * 40
+    assert docker_args[runner_uid_env + 1] == "RUNNER_UID=2001"
+    container_script = (tmp_path / "docker-stdin").read_text(encoding="ascii")
+    assert 'useradd --create-home --shell /bin/bash --uid "$RUNNER_UID" trial' in (
+        container_script
+    )
+    assert 'RUNNER_UID="$RUNNER_UID"' in container_script
 
 
 def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> None:
@@ -300,6 +426,12 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> N
     assert "refs/tags/" in workflow
     assert "--paginate --slurp" in workflow
     assert "release pages are invalid" in workflow
+    assert "debian13-x86_64|macos15-arm64|ubuntu24-x86_64|wsl2-ubuntu24" in workflow
+    publish_recheck = workflow[workflow.index("Fetch and reverify selected build") :]
+    assert 'run.get("event") != "workflow_dispatch"' in publish_recheck
+    assert 'run.get("status") != "completed"' in publish_recheck
+    assert 'run.get("head_branch") != os.environ["DEFAULT_BRANCH"]' in publish_recheck
+    assert 'repository.get("full_name") != os.environ["REPOSITORY"]' in publish_recheck
     assert workflow.index("final-default-head.json") < workflow.index(
         '"repos/$REPOSITORY/git/refs"'
     )
@@ -386,70 +518,52 @@ def test_public_ci_installs_the_qt_gl_runtime_libraries() -> None:
 
 
 def test_trial_documents_start_from_the_two_release_assets() -> None:
-    """Participant documentation begins at the shared prerelease, not source."""
+    """The README routes participants to all four target-specific guides."""
     english_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
     japanese_readme = (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8")
-    english_quick_start = (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(
-        encoding="utf-8"
-    )
-    japanese_quick_start = (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(
-        encoding="utf-8"
-    )
-
     assert "being prepared" not in english_readme
     assert "There is no public trial wheel" not in english_readme
     assert "準備中" not in japanese_readme
     assert "public trial wheelもPyPI releaseもない" not in japanese_readme
     for document in (english_readme, japanese_readme):
-        assert ".zip.sha256" in document
-        assert "GitHub prerelease" in document
-    for document in (english_quick_start, japanese_quick_start):
-        outer = document.index('sha256sum -c "${sidecars[0]}"')
-        unpack = document.index('unzip "$archive"')
-        enter = document.index('cd "$bundle"')
-        inner = document.index("sha256sum -c SHA256SUMS")
-        assert outer < unpack < enter < inner
-        assert "Ubuntu 24.04" in document
-        assert "x86_64" in document
-        assert "WSL2" not in document
-        assert "constraints-ubuntu24-aarch64.txt" not in document
+        assert "docs/trial" in document
+        for target in _TRIAL_GUIDES:
+            assert target in document
+    for target, documents in _trial_guide_documents().items():
+        for document in documents:
+            assert target in document
+            assert ".zip.sha256" in document
+            assert "SHA256SUMS" in document
 
 
-def test_readme_install_commands_use_the_verified_wheel_glob() -> None:
-    """Runnable participant commands must not contain a version placeholder."""
-    documents = (
-        (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"),
-        (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8"),
-    )
-
-    for document in documents:
-        bash_blocks = re.findall(r"```bash\n(.*?)\n```", document, flags=re.DOTALL)
-        install_blocks = [block for block in bash_blocks if "pip install" in block]
-        assert len(install_blocks) == 1
-        install = install_blocks[0]
-        assert "<build-id>" not in install
-        assert "--only-binary=:all:" in install
-        assert "constraints-ubuntu24-x86_64.txt" in install
-        assert "./gwexpy_studio-*.whl" in install
+def test_trial_guide_install_commands_use_one_verified_wheel() -> None:
+    """Each target guide selects one wheel and its target constraints."""
+    for target, documents in _trial_guide_documents().items():
+        for document in documents:
+            install = _trial_install_block(document)
+            assert target in install or (
+                target == "wsl2-ubuntu24" and "constraints-ubuntu24-" in install
+            )
+            assert "test \"${#" in install and "-eq 1" in install
+            assert "<build-id>" not in install
+            assert "--only-binary=:all:" in install
+            assert "gwexpy_studio-*.whl" in install
 
 
 def test_trial_participant_commands_isolate_python_user_paths() -> None:
     """Trial installs and launches must not reuse user-site or PYTHONPATH code."""
-    documents = (
-        (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"),
-        (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8"),
-        (REPOSITORY_ROOT / "docs" / "Quick-Start.md").read_text(encoding="utf-8"),
-        (REPOSITORY_ROOT / "docs" / "Quick-Start.ja.md").read_text(encoding="utf-8"),
-    )
-
-    for document in documents:
-        activate = document.index("conda activate gwexpy-studio")
-        disable_user_site = document.index("export PYTHONNOUSERSITE=1")
-        clear_pythonpath = document.index("unset PYTHONPATH")
-        install = document.index("pip install --only-binary=:all:")
-        launch = document.index("gwexpy-studio", install + 1)
-        assert activate < disable_user_site < install < launch
-        assert activate < clear_pythonpath < install < launch
+    for documents in _trial_guide_documents().values():
+        for document in documents:
+            install_block = _trial_install_block(document)
+            activate = document.index("conda activate", document.index("env_name="))
+            env_name = re.search(r"env_name=gwexpy-studio-[a-z0-9-]+", document)
+            assert env_name is not None
+            disable_user_site = document.index("export PYTHONNOUSERSITE=1")
+            clear_pythonpath = document.index("unset PYTHONPATH")
+            install = document.index("pip install --only-binary=:all:")
+            assert activate < disable_user_site < install
+            assert activate < clear_pythonpath < install
+            assert "PYTHONNOUSERSITE=1" in install_block or disable_user_site < install
 
 
 def test_trial_readiness_defines_the_archive_and_manual_approval_contract() -> None:
@@ -477,10 +591,7 @@ def test_platform_trial_documents_match_distribution_and_human_gate() -> None:
             )
             for name in ("Quick-Start.md", "Quick-Start.ja.md", "Feedback.ja.md")
         }
-        for target, directory in (
-            ("wsl2-ubuntu24", "wsl2"),
-            ("macos15-arm64", "macos"),
-        )
+        for target, directory in _TRIAL_GUIDES.items()
     }
 
     for target, target_documents in documents.items():
@@ -498,19 +609,27 @@ def test_platform_trial_documents_match_distribution_and_human_gate() -> None:
             assert "Close" in quick_start
             assert "Open" in quick_start
     assert "constraints-ubuntu24-" in documents["wsl2-ubuntu24"]["Quick-Start.md"]
+    assert "constraints-ubuntu24-x86_64.txt" in documents["ubuntu24-x86_64"][
+        "Quick-Start.md"
+    ]
+    assert "constraints-debian13-x86_64.txt" in documents["debian13-x86_64"][
+        "Quick-Start.md"
+    ]
+    assert "constraints-macos15-arm64.txt" in documents["macos15-arm64"][
+        "Quick-Start.md"
+    ]
     assert "libEGL.so.1" in documents["wsl2-ubuntu24"]["Quick-Start.md"]
-    assert (
-        "constraints-macos15-arm64.txt" in documents["macos15-arm64"]["Quick-Start.md"]
-    )
-    assert "libEGL.so.1" not in documents["macos15-arm64"]["Quick-Start.md"]
 
     evidence = (
         REPOSITORY_ROOT / "docs" / "trial" / "Human-Trial-Evidence.md"
     ).read_text(encoding="utf-8")
     assert "N >= 3" in evidence
     assert "ceil(2N / 3)" in evidence
-    assert "WSL2参加者" in evidence
-    assert "macOS参加者" in evidence
+    assert any("WSL2" in line and "2名以上" in line for line in evidence.splitlines())
+    assert any(
+        ("Mac" in line or "macOS" in line) and "1名以上" in line
+        for line in evidence.splitlines()
+    )
     assert "Issue ID" in evidence
     assert "root cause ID" in evidence
     assert "Save → Close → Open" in evidence

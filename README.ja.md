@@ -8,45 +8,32 @@ PythonやJupyterに慣れていない研究者と学生が、Gitを使わずに�
 
 ## 試用版の配布
 
-試用者には、公開担当者が明示した一つのGitHub prereleaseリンクを共有します。
+試用版は、targetごとのZIPと対応する外側checksum sidecarで配布します。
 
-同じbasenameを持つ次の2ファイルをダウンロードしてください。
+候補文書は`ubuntu24-x86_64`、`debian13-x86_64`、`wsl2-ubuntu24`、
+`macos15-arm64`の4targetを扱います。
 
-- `gwexpy-studio-trial-<build-id>.zip`
-- `gwexpy-studio-trial-<build-id>.zip.sha256`
+guideが存在することは、そのtargetが公開済みまたはqualification済みであることを意味しません。
+送付者が明示した検証済みReleaseだけを使用してください。
 
-外側のchecksumを確認し、ZIPを展開して、同梱したQuick Startに従います。
+試用者に必要なのは、Python 3.12を使うcondaです。
+Git、source checkout、editable install、GitHub accountは不要です。
 
-現在公開済みのprereleaseは、conda Python 3.12を使うnative Ubuntu 24.04
-x86_64専用です。WSL2とmacOSでは未qualificationであり、それらの利用者へは
-配布しません。
+送付されたtarget名に対応するQuick Startを使ってください。
+Quick Startは、配布物に含まれるZIP、wheel、constraintsを一意に確認し、専用conda環境を作り、OSのPythonを変更せずに導入します。
 
-展開先のディレクトリへ移動した後の導入経路は次のとおりです。
+target別の手順は[docs/trial](docs/trial)にあります。
+公開後は外部の配布一覧で、現在のReleaseと実際に試験したOS版を確認してください。
 
-```bash
-conda create -n gwexpy-studio python=3.12
-conda activate gwexpy-studio
-export PYTHONNOUSERSITE=1
-unset PYTHONPATH
-pip install --only-binary=:all: \
-  -c constraints-ubuntu24-x86_64.txt \
-  ./gwexpy_studio-*.whl
-gwexpy-studio
-```
+ZIPにはwheel、constraints、checksum、build identity、target別Quick Start、
+日本語のfeedback formを収録します。
 
-二つの環境設定により、別のPython環境やsource checkoutにあるpackageが試用版の処理へ混入することを防ぎます。
+別のOS、CPU architecture、native／WSLの別、desktop環境では使用しません。
 
-ZIPにはwheel、architecture別のqualification記録、checksum、build identity、日英のQuick Start、`Feedback.ja.md`を収録します。
+旧Ubuntu reference artifactは、今回の4target trialとは別に扱います。
+schema 3のtagとassetは互換性確認用に保持するもので、新しいqualification済みtargetを意味しません。
 
-試用者向けの経路にGit、source checkout、editable install、PyPIは含めません。
-
-`wsl2-ubuntu24`版と`macos15-arm64`版は、同じsource commitから作った候補が
-WSL2の両architectureとApple Silicon macOSの実機technical qualificationを
-すべて通過した後にだけ、別々のprereleaseとして公開します。参加者向け手順は
-[docs/trial](docs/trial)にありますが、この文書の存在は未公開targetの利用開始を
-意味しません。
-
-## 最初の5分
+## 基本Workflow
 
 試用では、次の短い流れを確認します。
 
@@ -54,7 +41,7 @@ WSL2の両architectureとApple Silicon macOSの実機technical qualificationを
 2. **Try Sample**を選ぶ。
 3. TimeSeriesをCropする。
 4. **ASD**を実行する。
-5. projectを保存し、Studioを閉じ、開き直してrecoveryを確認する。
+5. projectを保存し、Studioを閉じ、開き直す。
 
 projectは`.gwxproj`として保存します。
 
@@ -84,3 +71,5 @@ source codeは[MIT license](LICENSE)です。
 意図的に開発環境を作るcontributorは、[docs/development.md](docs/development.md)を参照してください。
 
 public trial contractは[docs/release/0.1.0a1-trial-readiness.md](docs/release/0.1.0a1-trial-readiness.md)です。
+
+feedbackの送付方法は各bundleに収録します。

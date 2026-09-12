@@ -23,6 +23,7 @@ include src/**
 exclude packaging/**
 include packaging/release-source-allowlist.txt
 include packaging/trial-io-capabilities.json
+include packaging/trial-toolchain.json
 include docs/adr/**
 include docs/architecture-overview.md
 include docs/design/**
@@ -56,12 +57,15 @@ include scripts/run_trial_technical_gate.py
 include scripts/assemble_trial_bundle.py
 include scripts/verify_trial_bundle.py
 include scripts/trial_targets.py
+include scripts/trial_toolchain.py
+include scripts/bootstrap_trial_conda.py
 include scripts/verify_platform_qualification.py
 include scripts/run_platform_qualification.py
 include scripts/build_qualification_kit.py
 include scripts/evaluate_human_trial.py
 include scripts/verify_trial_seed.py
 include scripts/extract_trial_artifact.py
+include scripts/verify_publication_groups.py
 exclude scripts/capture_alpha_trial.py
 exclude scripts/build_appimage.py
 exclude scripts/build_standalone.py

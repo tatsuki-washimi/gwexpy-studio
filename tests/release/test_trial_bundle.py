@@ -46,6 +46,22 @@ def _verifier():
     return importlib.import_module("scripts.verify_trial_bundle")
 
 
+def test_assembler_cli_uses_the_closed_registry_for_native_targets() -> None:
+    parser = _bundle()._parser()
+    action = next(
+        action for action in parser._actions if action.dest == "trial_target"
+    )
+
+    assert set(action.choices) == {
+        "debian13-x86_64",
+        "macos15-arm64",
+        "ubuntu24-x86_64",
+        "wsl2-ubuntu24",
+    }
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--trial-target", "unknown-target"])
+
+
 def _canonical_json(value: object) -> bytes:
     return (
         json.dumps(
@@ -131,6 +147,22 @@ def _write_wheel_members(wheel: Path, members: dict[str, bytes]) -> None:
 
 def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
     """Create minimal, mutually bound M2 inputs without a network install."""
+    qualification_scripts = (
+        "assemble_trial_bundle.py",
+        "build_trial_wheel.py",
+        "capture_trial_resolution.py",
+        "export_release_source.py",
+        "package_trial_release.py",
+        "release_source_manifest.py",
+        "run_platform_qualification.py",
+        "run_trial_technical_gate.py",
+        "trial_targets.py",
+        "trial_toolchain.py",
+        "verify_platform_qualification.py",
+        "verify_public_source.py",
+        "verify_trial_bundle.py",
+    )
+    repository_scripts = Path(__file__).resolve().parents[2] / "scripts"
     source_version = b'__version__ = "0.1.0a1"\n'
     capability_policy = _canonical_json(
         {
@@ -187,6 +219,13 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
                         "packaging/trial-io-capabilities.json", capability_policy
                     ),
                     _manifest_entry("src/gwexpy_studio/_version.py", source_version),
+                    *(
+                        _manifest_entry(
+                            f"scripts/{name}",
+                            (repository_scripts / name).read_bytes(),
+                        )
+                        for name in qualification_scripts
+                    ),
                 ),
                 key=lambda entry: entry.path.encode(),
             )
