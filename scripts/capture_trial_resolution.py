@@ -289,6 +289,13 @@ _CONSUMER_GATE_STAGES = frozenset(
         "recovery-dialog-poll-entered",
         "recovery-dialog-button-resolved",
         "recovery-dialog-modal-returned",
+        "recovery-binding-isolation-confirmed",
+        "review-restore-dispatch-accepted",
+        "review-restore-result-succeeded",
+        "review-dialog-scheduler-bound",
+        "review-dialog-modal-returned",
+        "restore-project-dispatch-accepted",
+        "restore-project-settled",
     }
 )
 _ALLOWED_GATE_STAGE_PAIRS = frozenset(
