@@ -784,6 +784,7 @@ _NORMAL_GATE_STAGES = frozenset(
         "io-catalog-ready",
         "io-inspection",
         "io-read",
+        "io-read-settled",
         "save-project",
         "save-after-refusal",
         "close-project",
@@ -791,7 +792,9 @@ _NORMAL_GATE_STAGES = frozenset(
         "open-project",
         "reopened-project",
         "restore-review",
+        "restore-review-handled",
         "restored-project",
+        "restored-state-settled",
         "io-unavailable",
         "io-refusal",
         "worker-exit",
@@ -1696,6 +1699,46 @@ def _wait(app: object, predicate: object, label: str, timeout_s: float = 30.0) -
         raise GateError(f"technical-gate timed out during {label}")
 
 
+def _normal_io_read_ready(
+    *, window: Any, idle_state: Any, previews: Sequence[Any]
+) -> bool:
+    """Require the preview callback after the worker reports a resident object."""
+    return (
+        window.bridge.state is idle_state
+        and len(window.project.objects) == 1
+        and bool(window._workspace_status.get("resident_object_ids"))
+        and bool(previews)
+    )
+
+
+def _record_preview_after_display(
+    *,
+    previews: list[Any],
+    display: Callable[[Any, Any], None],
+    preview: Any,
+    spec: Any,
+) -> None:
+    """Count a preview only after the real canvas accepts it."""
+    display(preview, spec)
+    previews.append(preview)
+
+
+def _normal_reopen_ready(
+    *, window: Any, idle_state: Any, project_path: str
+) -> bool:
+    """Wait for action state to settle before triggering Review / Restore."""
+    return (
+        window.bridge.state is idle_state
+        and len(window.project.objects) == 1
+        and window._workspace_status.get("project_path") == project_path
+        and window._workspace_status.get("needs_restore") is True
+        and window._workspace_status.get("resident_object_ids") == []
+        and not window._command_reserved
+        and not window._modal_active
+        and window.restore_project_action.isEnabled()
+    )
+
+
 def _wait_for_sample_catalog(
     *, app: Any, window: Any, panel: Any, idle_state: object
 ) -> None:
@@ -2058,21 +2101,26 @@ def _run_normal_launcher(*, checkout: Path, work_root: Path) -> None:
             original_set_preview = window.plot_canvas.set_preview
 
             def capture_preview(preview: Any, spec: Any) -> None:
-                previews.append(preview)
-                original_set_preview(preview, spec)
+                _record_preview_after_display(
+                    previews=previews,
+                    display=original_set_preview,
+                    preview=preview,
+                    spec=spec,
+                )
 
             window.plot_canvas.set_preview = capture_preview  # type: ignore[method-assign]
             _record_gate_stage(work_root, "normal", "io-read")
             QTest.mouseClick(panel.confirm_button, Qt.MouseButton.LeftButton)
             _wait(
                 app,
-                lambda: (
-                    window.bridge.state is BridgeState.IDLE
-                    and len(window.project.objects) == 1
-                    and bool(window._workspace_status.get("resident_object_ids"))
+                lambda: _normal_io_read_ready(
+                    window=window,
+                    idle_state=BridgeState.IDLE,
+                    previews=previews,
                 ),
                 "normal I/O read",
             )
+            _record_gate_stage(work_root, "normal", "io-read-settled")
             object_id = window.project.objects[0].object_id
             if not previews:
                 raise GateError("normal CSV read preview was not captured")
@@ -2145,13 +2193,10 @@ def _run_normal_launcher(*, checkout: Path, work_root: Path) -> None:
             _record_gate_stage(work_root, "normal", "open-project")
             _wait(
                 app,
-                lambda: (
-                    window.bridge.state is BridgeState.IDLE
-                    and len(window.project.objects) == 1
-                    and window._workspace_status.get("project_path")
-                    == str(project.resolve())
-                    and window._workspace_status.get("needs_restore") is True
-                    and window._workspace_status.get("resident_object_ids") == []
+                lambda: _normal_reopen_ready(
+                    window=window,
+                    idle_state=BridgeState.IDLE,
+                    project_path=str(project.resolve()),
                 ),
                 "normal reopen",
             )
@@ -2180,6 +2225,7 @@ def _run_normal_launcher(*, checkout: Path, work_root: Path) -> None:
                 timeout_s=_REVIEW_PRE_DIALOG_TIMEOUT_S,
             )
             review_message.raise_if_failed()
+            _record_gate_stage(work_root, "normal", "restore-review-handled")
             _wait(
                 app,
                 lambda: (
@@ -2190,6 +2236,7 @@ def _run_normal_launcher(*, checkout: Path, work_root: Path) -> None:
                 ),
                 "normal restore",
             )
+            _record_gate_stage(work_root, "normal", "restored-state-settled")
             restore_boundaries()
             message_binding.restore()
             _record_gate_stage(work_root, "normal", "restored-project")
