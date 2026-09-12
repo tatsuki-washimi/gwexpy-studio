@@ -433,6 +433,7 @@ try:
     from .trial_toolchain import (
         ToolchainError,
         conda_environment_manager_record_from_info,
+        conda_subdir,
     )
     from .verify_platform_qualification import (
         QualificationError,
@@ -467,6 +468,7 @@ except ImportError:  # pragma: no cover - standalone kit execution.
     from trial_toolchain import (  # type: ignore[no-redef]
         ToolchainError,
         conda_environment_manager_record_from_info,
+        conda_subdir,
     )
     from verify_platform_qualification import (  # type: ignore[no-redef]
         QualificationError,
@@ -1059,12 +1061,16 @@ def _verify_installed_phase(
     cwd: Path,
     checkout: Path,
     phase: Mapping[str, object],
+    expected_subdir: str,
     require_studio: bool,
 ) -> None:
     """Compare each fresh environment's observed closure to resolution bytes."""
     expected_conda = validate_conda_package_records(phase.get("conda_packages"))
     observed_conda = _conda_phase_packages(
-        conda_executable=conda, prefix=prefix, cwd=cwd
+        conda_executable=conda,
+        prefix=prefix,
+        cwd=cwd,
+        expected_subdir=expected_subdir,
     )
     if observed_conda != expected_conda:
         raise PlatformQualificationError(
@@ -1809,6 +1815,11 @@ def _run_qualification(
     except PlatformQualificationError:
         record_untrusted("host-mismatch")
         raise
+    try:
+        expected_subdir = conda_subdir(target_id, architecture)
+    except ToolchainError as exc:
+        record_untrusted("host-mismatch")
+        raise PlatformQualificationError("host-mismatch") from exc
     target = payload["target"]
     files = cast(dict[str, bytes], payload["files"])
     resolution_name = target.resolution_filename(architecture)
@@ -1918,6 +1929,7 @@ def _run_qualification(
             cwd=root,
             checkout=Path(kit),
             phase=cast(Mapping[str, object], phase_one),
+            expected_subdir=expected_subdir,
             require_studio=True,
         )
         checks["conda_runtime"] = True
@@ -1946,6 +1958,7 @@ def _run_qualification(
             cwd=root,
             checkout=Path(kit),
             phase=cast(Mapping[str, object], phase_replay),
+            expected_subdir=expected_subdir,
             require_studio=False,
         )
         checks["replay_runtime"] = True
