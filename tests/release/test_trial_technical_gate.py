@@ -7,6 +7,7 @@ boundary.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 import json
@@ -529,12 +530,90 @@ def test_workspace_dialog_consumes_metadata_without_forwarding_it() -> None:
         seen.append((args, kwargs, window._modal_active))
         return sentinel
 
+    assert not hasattr(execute, "__self__")
     assert (
         workspace_dialog(window, execute, "payload", dialog_instance=dialog, key=3)
         is sentinel
     )
     assert seen == [(('payload',), {"key": 3}, True)]
     assert window._modal_active is False
+
+
+def test_generic_review_binding_uses_explicit_instance_for_plain_callable() -> None:
+    from gwexpy_studio.ui.workspace_dialogs import workspace_dialog
+
+    gate = _gate()
+    module = SimpleNamespace(workspace_dialog=workspace_dialog)
+    stages: list[str] = []
+    binding = gate._WorkspaceMessageBinding(
+        workspace_module=module,
+        message_type=object,
+        record=stages.append,
+    )
+    scheduler = _BindingScheduler()
+    binding.register("Review restoration", scheduler)
+    updates: list[bool] = []
+    window = SimpleNamespace(
+        _modal_active=False,
+        _update_command_state=lambda: updates.append(window._modal_active),
+    )
+    seen: list[tuple[tuple[object, ...], dict[str, object], bool]] = []
+    sentinel = object()
+    dialog = SimpleNamespace(windowTitle=lambda: "Review restoration")
+
+    def execute(*args: object, **kwargs: object) -> object:
+        seen.append((args, kwargs, window._modal_active))
+        return sentinel
+
+    assert not hasattr(execute, "__self__")
+    assert binding.recovery_attempt == "unarmed"
+    try:
+        result = module.workspace_dialog(
+            window,
+            execute,
+            "payload",
+            dialog_instance=dialog,
+            key=3,
+        )
+        assert result is sentinel
+        assert scheduler.bound is dialog
+        assert seen == [(('payload',), {"key": 3}, True)]
+        assert window._modal_active is False
+        assert updates == [True, False]
+        assert binding.recovery_attempt == "unarmed"
+        assert stages == []
+    finally:
+        binding.restore()
+
+    assert module.workspace_dialog is workspace_dialog
+    assert binding._scheduled == {}
+    assert scheduler.cleared == 1
+
+
+def test_review_restore_callsite_passes_explicit_dialog_instance() -> None:
+    source_path = Path(__file__).parents[2] / "src/gwexpy_studio/ui/workspace_window.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    review = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_review_restore_response"
+    )
+    calls = [
+        node
+        for node in ast.walk(review)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "workspace_dialog"
+    ]
+
+    assert len(calls) == 1
+    assert any(
+        keyword.arg == "dialog_instance"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "dialog"
+        for keyword in calls[0].keywords
+    )
 
 
 def test_workspace_dialog_restores_modal_state_and_propagates_original_exception(
@@ -584,11 +663,17 @@ def test_armed_recovery_binds_explicit_instance_for_callable_without_self() -> N
         result = module.workspace_dialog(
             object(), lambda: sentinel, dialog_instance=object()
         )
+        assert result is sentinel
+        assert binding._recovery_modal_active is False
+        assert binding.binding_error is None
+        assert binding._diagnostic_message is None
+        assert binding._diagnostic_scheduler is None
+        assert binding._recovery_scheduler is None
+        assert binding._recovery_expected_instance is binding._MISSING
+        assert scheduler.cleared == 1
     finally:
         binding.restore()
-    assert result is sentinel
     assert scheduler.bound is not None
-    assert scheduler.cleared == 1
     assert binding._recovery_scheduler is None
     assert stages == [
         "consumer/recovery-dialog-boundary-entered",
@@ -1501,109 +1586,6 @@ def test_workspace_dialog_binding_source_declares_exact_fixed_stages_and_record_
     source = inspect.getsource(gate._WorkspaceMessageBinding)
     assert "record=" in source
     assert "message_binding=" in inspect.getsource(gate._instrument_recovery_boundaries)
-
-
-def test_data_restore_diagnostics_declare_one_fixed_success_prefix() -> None:
-    gate = _gate()
-
-    assert gate._DATA_RESTORE_DIAGNOSTIC_STAGES == {
-        "consumer/recovery-binding-isolation-confirmed",
-        "consumer/review-restore-dispatch-accepted",
-        "consumer/review-restore-result-succeeded",
-        "consumer/review-dialog-scheduler-bound",
-        "consumer/review-dialog-modal-returned",
-        "consumer/restore-project-dispatch-accepted",
-        "consumer/restore-project-settled",
-    }
-    assert gate._DATA_RESTORE_DIAGNOSTIC_STAGES <= gate._ALLOWED_GATE_STAGE_PAIRS
-
-
-def test_review_dialog_records_bound_and_modal_success_prefix() -> None:
-    stages: list[str] = []
-    scheduler = _BindingScheduler()
-    scheduler.handled = True
-    sentinel = object()
-
-    class ReviewMessage:
-        def windowTitle(self) -> str:
-            return "Review restoration"
-
-        def execute(self) -> object:
-            return sentinel
-
-    binding = _diagnostic_binding(
-        record=stages.append,
-        message_type=ReviewMessage,
-    )
-    message = ReviewMessage()
-    binding.register("Review restoration", scheduler)
-    try:
-        result = binding._workspace_module.workspace_dialog(
-            object(), message.execute
-        )
-    finally:
-        binding.restore()
-
-    assert result is sentinel
-    assert scheduler.bound is message
-    assert stages == [
-        "consumer/review-dialog-scheduler-bound",
-        "consumer/review-dialog-modal-returned",
-    ]
-
-
-def test_data_restore_dispatch_diagnostics_preserve_success_prefix() -> None:
-    gate = _gate()
-    stages: list[str] = []
-    result = SimpleNamespace(success=True, payload={})
-
-    def dispatch(
-        _kind: str,
-        _payload: dict[str, object],
-        *,
-        pending_action: str,
-        pending_params: dict[str, object] | None = None,
-    ) -> bool:
-        del pending_action, pending_params
-        return True
-
-    window = SimpleNamespace(
-        _dispatch_command=dispatch,
-        _handle_workspace_result=lambda _result: "handled",
-        _pending_action="review_restore",
-    )
-    restore = gate._instrument_recovery_boundaries(
-        window=window,
-        record=stages.append,
-    )
-    try:
-        assert window._dispatch_command(
-            "review_restore", {}, pending_action="review_restore"
-        )
-        assert window._handle_workspace_result(result) == "handled"
-        window._pending_action = "restore_project"
-        assert window._dispatch_command(
-            "restore_project", {}, pending_action="restore_project"
-        )
-    finally:
-        restore()
-
-    assert stages == [
-        "review-restore-dispatch-accepted",
-        "review-restore-result-succeeded",
-        "restore-project-dispatch-accepted",
-    ]
-
-
-def test_consumer_data_restore_prefix_orders_cleanup_dialog_and_settlement() -> None:
-    source = inspect.getsource(_gate()._run_consumer_launcher)
-
-    assert source.index('"data-restore"') < source.index(
-        '"recovery-binding-isolation-confirmed"'
-    )
-    assert source.index('"recovery-binding-isolation-confirmed"') < source.index(
-        '"restore-project-settled"'
-    )
 
 
 def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:

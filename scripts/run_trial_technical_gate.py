@@ -34,21 +34,6 @@ _RECOVERY_DIALOG_DIAGNOSTIC_STAGES = frozenset(
         "consumer/recovery-dialog-modal-returned",
     }
 )
-_REVIEW_DIALOG_TITLE = "Review restoration"
-_DATA_RESTORE_DIAGNOSTIC_STAGES = frozenset(
-    {
-        "consumer/recovery-binding-isolation-confirmed",
-        "consumer/review-restore-dispatch-accepted",
-        "consumer/review-restore-result-succeeded",
-        "consumer/review-dialog-scheduler-bound",
-        "consumer/review-dialog-modal-returned",
-        "consumer/restore-project-dispatch-accepted",
-        "consumer/restore-project-settled",
-    }
-)
-_DIALOG_DIAGNOSTIC_STAGES = (
-    _RECOVERY_DIALOG_DIAGNOSTIC_STAGES | _DATA_RESTORE_DIAGNOSTIC_STAGES
-)
 
 
 class _ScheduledMessageClick:
@@ -194,7 +179,6 @@ class _WorkspaceMessageBinding:
                 # Keep the ordinary title-bound helper for non-Recovery
                 # dialogs. The armed branch below intentionally never reads
                 # callable owners or searches application widgets.
-                review_scheduled = self._scheduled.get(_REVIEW_DIALOG_TITLE)
                 message = (
                     dialog_instance
                     if dialog_instance is not None
@@ -205,20 +189,7 @@ class _WorkspaceMessageBinding:
                     scheduled = self._scheduled.get(title)
                     if scheduled is not None:
                         scheduled.bind(message)
-                        if scheduled is review_scheduled:
-                            self._record_diagnostic_stage(
-                                "consumer/review-dialog-scheduler-bound"
-                            )
-                result = self._original(window, execute, *args, **kwargs)
-                if (
-                    review_scheduled is not None
-                    and bool(getattr(review_scheduled, "handled", False))
-                    and getattr(review_scheduled, "error", None) is None
-                ):
-                    self._record_diagnostic_stage(
-                        "consumer/review-dialog-modal-returned"
-                    )
-                return result
+                return self._original(window, execute, *args, **kwargs)
             if self._recovery_modal_active:
                 self._terminal_failure()
                 return None
@@ -314,18 +285,6 @@ class _WorkspaceMessageBinding:
     def recovery_attempt(self) -> str:
         """Return the bounded recovery attempt state for diagnostics and tests."""
         return self._recovery_attempt
-
-    @property
-    def recovery_binding_isolated(self) -> bool:
-        """Return whether Recovery owns no binding or active-modal references."""
-        return (
-            not self._recovery_modal_active
-            and self._binding_error is None
-            and self._diagnostic_message is None
-            and self._diagnostic_scheduler is None
-            and self._recovery_scheduler is None
-            and self._recovery_expected_instance is self._MISSING
-        )
 
     def arm_recovery(self) -> None:
         """Arm exactly one successful nonempty recovery result."""
@@ -438,7 +397,7 @@ class _WorkspaceMessageBinding:
 
     def _record_diagnostic_stage(self, stage: str) -> None:
         """Record one fixed diagnostic stage and fail closed on recorder errors."""
-        if stage not in _DIALOG_DIAGNOSTIC_STAGES:
+        if stage not in _RECOVERY_DIALOG_DIAGNOSTIC_STAGES:
             raise GateError("technical-gate diagnostic stage is invalid")
         if stage in self._emitted_stages:
             return
@@ -562,13 +521,6 @@ _CONSUMER_GATE_STAGES = frozenset(
         "recovery-dialog-poll-entered",
         "recovery-dialog-button-resolved",
         "recovery-dialog-modal-returned",
-        "recovery-binding-isolation-confirmed",
-        "review-restore-dispatch-accepted",
-        "review-restore-result-succeeded",
-        "review-dialog-scheduler-bound",
-        "review-dialog-modal-returned",
-        "restore-project-dispatch-accepted",
-        "restore-project-settled",
     }
 )
 _ALLOWED_GATE_STAGE_PAIRS = frozenset(
@@ -1593,15 +1545,9 @@ def _instrument_recovery_boundaries(
         )
         if traces_recovery and accepted:
             record("recovery-list-dispatch-accepted")
-        if accepted and kind == "review_restore":
-            record("review-restore-dispatch-accepted")
-        if accepted and kind == "restore_project":
-            record("restore-project-dispatch-accepted")
         return accepted
 
     def handle_workspace_result(result: Any) -> Any:
-        if window._pending_action == "review_restore" and result.success:
-            record("review-restore-result-succeeded")
         if window._pending_action == "list_recoveries":
             record("recovery-list-result-received")
             if result.success:
@@ -1744,11 +1690,6 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
             )
             _record_gate_stage(work_root, "consumer", "recovery-restored")
             _record_gate_stage(work_root, "consumer", "data-restore")
-            if not message_binding.recovery_binding_isolated:
-                raise GateError("technical-gate recovery dialog isolation failed")
-            _record_gate_stage(
-                work_root, "consumer", "recovery-binding-isolation-confirmed"
-            )
             review_message = _schedule_message_box_button(
                 app=app,
                 owner=window,
@@ -1769,7 +1710,6 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 "reviewed data restore",
             )
             review_message.raise_if_failed()
-            _record_gate_stage(work_root, "consumer", "restore-project-settled")
             _record_gate_stage(work_root, "consumer", "recovery-consumption")
             window.recoveries_action.trigger()
             _wait(

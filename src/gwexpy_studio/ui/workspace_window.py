@@ -512,7 +512,10 @@ class WorkspaceTools(SignalTools):
         dialog.setStandardButtons(
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
         )
-        if workspace_dialog(self, dialog.exec) == QMessageBox.StandardButton.Ok:
+        if (
+            workspace_dialog(self, dialog.exec, dialog_instance=dialog)
+            == QMessageBox.StandardButton.Ok
+        ):
             if self._dispatch_command(
                 "restore_project",
                 {"review": dict(review), "confirmed": True},
