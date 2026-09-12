@@ -543,7 +543,7 @@ class WorkspaceTools(SignalTools):
         restore = dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
         discard = dialog.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
         dialog.addButton("Later", QMessageBox.ButtonRole.RejectRole)
-        workspace_dialog(self, dialog.exec)
+        workspace_dialog(self, dialog.exec, dialog_instance=dialog)
         kind = (
             "recover_project"
             if dialog.clickedButton() is restore

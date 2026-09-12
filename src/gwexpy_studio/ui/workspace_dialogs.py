@@ -5,13 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 
-def workspace_dialog(window: Any, execute: Any, *args: Any) -> Any:
-    """Guard nested Qt dialogs without changing an outer modal reservation."""
+def workspace_dialog(
+    window: Any,
+    execute: Any,
+    *args: Any,
+    dialog_instance: Any | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Guard a dialog and keep optional instance metadata out of ``execute``."""
+    del dialog_instance
     previous = window._modal_active
     window._modal_active = True
     window._update_command_state()
     try:
-        return execute(*args)
+        return execute(*args, **kwargs)
     finally:
         window._modal_active = previous
         window._update_command_state()
