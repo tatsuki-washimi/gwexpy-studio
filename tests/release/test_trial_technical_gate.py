@@ -581,7 +581,7 @@ def test_generic_review_binding_uses_explicit_instance_for_plain_callable() -> N
         assert window._modal_active is False
         assert updates == [True, False]
         assert binding.recovery_attempt == "unarmed"
-        assert stages == []
+        assert stages == ["consumer/review-dialog-scheduler-bound"]
     finally:
         binding.restore()
 
@@ -1586,6 +1586,109 @@ def test_workspace_dialog_binding_source_declares_exact_fixed_stages_and_record_
     source = inspect.getsource(gate._WorkspaceMessageBinding)
     assert "record=" in source
     assert "message_binding=" in inspect.getsource(gate._instrument_recovery_boundaries)
+
+
+def test_data_restore_diagnostics_declare_one_fixed_success_prefix() -> None:
+    gate = _gate()
+
+    assert gate._DATA_RESTORE_DIAGNOSTIC_STAGES == {
+        "consumer/recovery-binding-isolation-confirmed",
+        "consumer/review-restore-dispatch-accepted",
+        "consumer/review-restore-result-succeeded",
+        "consumer/review-dialog-scheduler-bound",
+        "consumer/review-dialog-modal-returned",
+        "consumer/restore-project-dispatch-accepted",
+        "consumer/restore-project-settled",
+    }
+    assert gate._DATA_RESTORE_DIAGNOSTIC_STAGES <= gate._ALLOWED_GATE_STAGE_PAIRS
+
+
+def test_review_dialog_records_bound_and_modal_success_prefix() -> None:
+    stages: list[str] = []
+    scheduler = _BindingScheduler()
+    scheduler.handled = True
+    sentinel = object()
+
+    class ReviewMessage:
+        def windowTitle(self) -> str:
+            return "Review restoration"
+
+        def execute(self) -> object:
+            return sentinel
+
+    binding = _diagnostic_binding(
+        record=stages.append,
+        message_type=ReviewMessage,
+    )
+    message = ReviewMessage()
+    binding.register("Review restoration", scheduler)
+    try:
+        result = binding._workspace_module.workspace_dialog(
+            object(), message.execute
+        )
+    finally:
+        binding.restore()
+
+    assert result is sentinel
+    assert scheduler.bound is message
+    assert stages == [
+        "consumer/review-dialog-scheduler-bound",
+        "consumer/review-dialog-modal-returned",
+    ]
+
+
+def test_data_restore_dispatch_diagnostics_preserve_success_prefix() -> None:
+    gate = _gate()
+    stages: list[str] = []
+    result = SimpleNamespace(success=True, payload={})
+
+    def dispatch(
+        _kind: str,
+        _payload: dict[str, object],
+        *,
+        pending_action: str,
+        pending_params: dict[str, object] | None = None,
+    ) -> bool:
+        del pending_action, pending_params
+        return True
+
+    window = SimpleNamespace(
+        _dispatch_command=dispatch,
+        _handle_workspace_result=lambda _result: "handled",
+        _pending_action="review_restore",
+    )
+    restore = gate._instrument_recovery_boundaries(
+        window=window,
+        record=stages.append,
+    )
+    try:
+        assert window._dispatch_command(
+            "review_restore", {}, pending_action="review_restore"
+        )
+        assert window._handle_workspace_result(result) == "handled"
+        window._pending_action = "restore_project"
+        assert window._dispatch_command(
+            "restore_project", {}, pending_action="restore_project"
+        )
+    finally:
+        restore()
+
+    assert stages == [
+        "review-restore-dispatch-accepted",
+        "review-restore-result-succeeded",
+        "restore-project-dispatch-accepted",
+    ]
+
+
+def test_consumer_data_restore_prefix_orders_cleanup_dialog_and_settlement() -> None:
+    source = inspect.getsource(_gate()._run_consumer_launcher)
+
+    assert source.index('"data-restore"') < source.index(
+        '"recovery-binding-isolation-confirmed"'
+    )
+    assert source.index('"recovery-binding-isolation-confirmed"') < source.index(
+        '"restore-project-settled"'
+    )
 
 
 def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:
