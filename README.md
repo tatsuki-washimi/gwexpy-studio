@@ -10,48 +10,38 @@ need to learn Git or begin by writing a notebook.
 
 ## Trial distribution
 
-Invited participants receive one explicitly shared GitHub prerelease link.
+The trial is distributed as a target-specific ZIP and a matching outer checksum
+sidecar.
 
-Download the two release assets with the same base name:
+The candidate documents cover `ubuntu24-x86_64`, `debian13-x86_64`,
+`wsl2-ubuntu24`, and `macos15-arm64`.
 
-- `gwexpy-studio-trial-<build-id>.zip`
-- `gwexpy-studio-trial-<build-id>.zip.sha256`
+The presence of a guide does not mean that its target is published or qualified.
+Use only the verified Release explicitly named by the sender.
 
-Verify the outer checksum, unpack the ZIP, and follow the bundled Quick Start.
+Participants need conda with Python 3.12, but do not need Git, a source
+checkout, an editable install, or a GitHub account.
 
-The currently published prerelease is limited to native Ubuntu 24.04 x86_64
-with a conda Python 3.12 environment. It is not qualified for WSL2 or macOS and
-must not be distributed to users of those platforms.
+Use the Quick Start for the target named by the sender.
+It checks the exact ZIP, wheel, and constraints files supplied in that bundle,
+creates a dedicated conda environment, and keeps the operating system Python
+unchanged.
 
-After entering the unpacked directory, the installation path is:
+The target guides are under [docs/trial](docs/trial).
+After publication, use the external distribution list to confirm the current
+Release and the OS version actually tested.
 
-```bash
-conda create -n gwexpy-studio python=3.12
-conda activate gwexpy-studio
-export PYTHONNOUSERSITE=1
-unset PYTHONPATH
-pip install --only-binary=:all: \
-  -c constraints-ubuntu24-x86_64.txt \
-  ./gwexpy_studio-*.whl
-gwexpy-studio
-```
+The ZIP contains the wheel, constraints, checksums, build identity, target
+Quick Start, and Japanese feedback form.
 
-The two environment settings keep packages from another Python environment or
-source checkout out of the trial process.
+Do not use a bundle on another OS, CPU architecture, native or WSL mode, or
+desktop environment.
 
-The ZIP contains the wheel, architecture qualification records, checksums,
-build identity, Quick Starts, and the Japanese feedback form.
+The old Ubuntu reference artifact remains separate from this four-target trial.
+Its schema 3 tag and assets are read-only compatibility material and do not
+represent a newly qualified target.
 
-Git, a source checkout, an editable install, and PyPI are not part of the
-participant path.
-
-Separate `wsl2-ubuntu24` and `macos15-arm64` prereleases will be published only
-after both WSL2 architectures and Apple Silicon macOS have passed physical
-technical qualification from the same source commit. Their participant guides
-are under [docs/trial](docs/trial), but those guides do not make an unpublished
-target available.
-
-## First five minutes
+## Basic workflow
 
 The trial workflow is deliberately small:
 
@@ -59,7 +49,7 @@ The trial workflow is deliberately small:
 2. Select **Try Sample**.
 3. Crop the time series.
 4. Run **ASD**.
-5. Save the project, close Studio, reopen it, and review recovery if offered.
+5. Save the project, close Studio, and reopen it.
 
 Projects use the `.gwxproj` extension.
 
@@ -91,3 +81,5 @@ Contributors who intentionally want a development environment should read
 
 The public trial contract is in
 [docs/release/0.1.0a1-trial-readiness.md](docs/release/0.1.0a1-trial-readiness.md).
+
+Feedback instructions are included in each bundle.

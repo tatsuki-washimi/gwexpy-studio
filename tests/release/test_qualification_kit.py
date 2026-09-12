@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,3 +70,67 @@ def test_kit_rejects_a_release_for_another_target(tmp_path: Path) -> None:
             output_directory=tmp_path / "kit",
             target_id="macos15-arm64",
         )
+
+
+def test_kit_output_must_be_fresh_and_is_not_replaced(tmp_path: Path) -> None:
+    from scripts.build_qualification_kit import (
+        QualificationKitError,
+        build_qualification_kit,
+    )
+    from scripts.package_trial_release import package_trial_release
+
+    inputs = _write_trial_inputs(tmp_path)
+    bundle = _assemble_platform(inputs, tmp_path / "bundle", "wsl2-ubuntu24")
+    release = tmp_path / "release"
+    package_trial_release(bundle, release)
+    output = tmp_path / "kit"
+    output.mkdir()
+    marker = output / "marker"
+    marker.write_text("keep", encoding="ascii")
+    with pytest.raises(QualificationKitError, match="fresh"):
+        build_qualification_kit(
+            release_directory=release,
+            output_directory=output,
+            target_id="wsl2-ubuntu24",
+        )
+    assert marker.read_text(encoding="ascii") == "keep"
+
+
+def test_standalone_runner_loads_verified_helpers_without_checkout_imports(
+    tmp_path: Path,
+) -> None:
+    from scripts.build_qualification_kit import build_qualification_kit
+    from scripts.package_trial_release import package_trial_release
+
+    inputs = _write_trial_inputs(tmp_path)
+    bundle = _assemble_platform(inputs, tmp_path / "bundle", "wsl2-ubuntu24")
+    release = tmp_path / "release"
+    package_trial_release(bundle, release)
+    kit = build_qualification_kit(
+        release_directory=release,
+        output_directory=tmp_path / "kit",
+        target_id="wsl2-ubuntu24",
+    )
+    fake_conda = tmp_path / "conda"
+    fake_conda.write_text(
+        f'#!/bin/sh\nshift 5\nexec "{sys.executable}" "$@"\n',
+        encoding="ascii",
+    )
+    fake_conda.chmod(0o755)
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONNOUSERSITE"}
+    }
+    environment["CONDA_EXE"] = str(fake_conda)
+    completed = subprocess.run(
+        [str(kit / "run-qualification.sh")],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert b"ModuleNotFoundError" not in completed.stderr
+    result = kit / "results" / "qualification-untrusted.json"
+    assert result.is_file(), completed.stderr.decode()

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from multiprocessing import shared_memory
+
+import pytest
 
 from tests.support.g0_consistency import _owned_shm_prefix, _shm_names
 
@@ -18,9 +21,11 @@ def test_owned_shm_prefix_is_unique_and_restores_ambient_environment(
 
     with _owned_shm_prefix() as first:
         assert first.startswith("g0-")
+        assert len(first.encode("ascii")) == 13
         assert os.environ[variable] == first
         with _owned_shm_prefix() as second:
             assert second.startswith("g0-")
+            assert len(second.encode("ascii")) == 13
             assert second != first
             assert os.environ[variable] == second
         assert os.environ[variable] == first
@@ -41,6 +46,9 @@ def test_owned_shm_prefix_removes_a_previously_unset_environment_variable(
     assert variable not in os.environ
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="/dev/shm enumeration is Linux-only"
+)
 def test_owned_shm_names_excludes_unrelated_segments() -> None:
     """Leak checks must observe only the worker scope that owns a segment."""
     with _owned_shm_prefix() as prefix:

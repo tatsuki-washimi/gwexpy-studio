@@ -149,7 +149,7 @@ jobs:
                   if not isinstance(values, list):
                       fail("selected build artifact list is invalid")
                   listed.extend(values)
-              pattern = re.compile(rf"trial-bundle-(wsl2-ubuntu24|macos15-arm64)-{run_id}-a{run_attempt}")
+              pattern = re.compile(rf"trial-bundle-(debian13-x86_64|macos15-arm64|ubuntu24-x86_64|wsl2-ubuntu24)-{run_id}-a{run_attempt}")
               matching = [item for item in listed if isinstance(item, dict) and isinstance(item.get("name"), str) and pattern.fullmatch(item["name"])]
               if len(matching) != 1:
                   fail("selected build has no unique target release artifact")
@@ -265,6 +265,7 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
           ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -296,8 +297,15 @@ jobs:
                   raise SystemExit("default branch HEAD changed before publication")
 
           def verify_selected_build() -> None:
-              if not isinstance(run, dict) or run.get("path") != ".github/workflows/build-trial-wheel.yml" or run.get("conclusion") != "success" or run.get("head_sha") != os.environ["SOURCE_SHA"]:
+              if not isinstance(run, dict) or run.get("id") != int(os.environ["BUILD_RUN_ID"]):
+                  raise SystemExit("selected build run changed after preflight")
+              if run.get("path") != ".github/workflows/build-trial-wheel.yml" or run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success":
+                  raise SystemExit("selected build is no longer a successful manual run")
+              if run.get("head_branch") != os.environ["DEFAULT_BRANCH"] or run.get("head_sha") != os.environ["SOURCE_SHA"]:
                   raise SystemExit("selected build changed after preflight")
+              repository = run.get("repository")
+              if not isinstance(repository, dict) or repository.get("full_name") != os.environ["REPOSITORY"]:
+                  raise SystemExit("selected build repository changed after preflight")
               listed = [item for page in pages for item in page.get("artifacts", [])]
               matching = [item for item in listed if item.get("id") == int(os.environ["ARTIFACT_ID"])]
               if len(matching) != 1 or matching[0].get("digest") != os.environ["ARTIFACT_DIGEST"] or matching[0].get("expired") is not False:
@@ -361,8 +369,11 @@ jobs:
           trial = verify_trial_release_directory(directory)
           build = trial.get("build")
           target = trial.get("target")
+          workflow = build.get("workflow") if isinstance(build, dict) else None
           if not isinstance(build, dict) or not isinstance(target, dict) or build.get("source_sha") != os.environ["SOURCE_SHA"] or target.get("id") != os.environ["TARGET_ID"]:
               raise SystemExit("verified target release identity changed")
+          if not isinstance(workflow, dict) or workflow.get("run_id") != int(os.environ["BUILD_RUN_ID"]):
+              raise SystemExit("verified target release workflow identity changed")
           archives = list(directory.glob("*.zip"))
           if len(archives) != 1:
               raise SystemExit("verified target release archive is missing")

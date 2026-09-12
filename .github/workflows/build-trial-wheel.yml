@@ -12,8 +12,10 @@ on:
         required: true
         type: choice
         options:
-          - wsl2-ubuntu24
+          - debian13-x86_64
           - macos15-arm64
+          - ubuntu24-x86_64
+          - wsl2-ubuntu24
 
 permissions:
   contents: read
@@ -29,7 +31,7 @@ jobs:
   prepare:
     name: Build one immutable trial seed
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Bind dispatch to default-branch P and a supported target
         shell: bash
@@ -52,7 +54,12 @@ jobs:
               raise SystemExit("dispatch the build from the default branch")
           if source_sha != os.environ["GITHUB_SHA"]:
               raise SystemExit("source_sha must equal the dispatched default-branch HEAD")
-          if os.environ["TRIAL_TARGET"] not in {"wsl2-ubuntu24", "macos15-arm64"}:
+          if os.environ["TRIAL_TARGET"] not in {
+              "debian13-x86_64",
+              "macos15-arm64",
+              "ubuntu24-x86_64",
+              "wsl2-ubuntu24",
+          }:
               raise SystemExit("trial_target is unsupported")
           PY
 
@@ -72,12 +79,18 @@ jobs:
           test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
-      - name: Create the wheel builder environment
+      - name: Bootstrap the verified Miniforge builder
         shell: bash
         run: |
           set -euo pipefail
-          python3.12 -m venv "$RUNNER_TEMP/trial-builder-venv"
-          "$RUNNER_TEMP/trial-builder-venv/bin/python" -m pip install --upgrade pip setuptools
+          python3.12 scripts/bootstrap_trial_conda.py \
+            --system linux \
+            --architecture x86_64 \
+            --prefix "$RUNNER_TEMP/trial-miniforge"
+          "$RUNNER_TEMP/trial-miniforge/bin/conda" create \
+            --yes --quiet --override-channels --channel conda-forge \
+            --prefix "$RUNNER_TEMP/trial-builder" \
+            python=3.12 pip setuptools wheel
 
       - name: Build and bind the seed evidence
         shell: bash
@@ -87,14 +100,14 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/trial-builder-venv/bin/python" scripts/build_trial_wheel.py \
+          "$RUNNER_TEMP/trial-builder/bin/python" scripts/build_trial_wheel.py \
             --source "$GITHUB_WORKSPACE" \
             --output "$RUNNER_TEMP/trial-seed" \
             --source-sha "$SOURCE_SHA" \
             --utc-date "$(date -u +%Y%m%d)" \
             --run "$RUN_NUMBER" \
             --attempt "$RUN_ATTEMPT"
-          python3.12 scripts/verify_trial_seed.py \
+          "$RUNNER_TEMP/trial-builder/bin/python" scripts/verify_trial_seed.py \
             --seed "$RUNNER_TEMP/trial-seed" \
             --source-sha "$SOURCE_SHA"
 
@@ -107,20 +120,12 @@ jobs:
           retention-days: 30
           overwrite: false
 
-  qualify-linux:
-    name: Qualify ${{ matrix.architecture }} Linux runtime closure
-    if: inputs.trial_target == 'wsl2-ubuntu24'
+  qualify-ubuntu:
+    name: Qualify native Ubuntu 24.04 x86_64 runtime closure
+    if: inputs.trial_target == 'ubuntu24-x86_64'
     needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - architecture: x86_64
-            runner: ubuntu-24.04
-          - architecture: aarch64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Check out P for the sealed gate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -136,6 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
       - name: Download the immutable seed
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -158,18 +164,30 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libegl1 libgl1
+          sudo apt-get install --no-install-recommends -y \
+            libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libdbus-1-3 \
+            libxkbcommon0 libzstd1
 
-      - name: Resolve, reinstall, and qualify the native closure
+      - name: Bootstrap conda and qualify native Ubuntu
         shell: bash
         run: |
           set -euo pipefail
-          python3.12 -m venv "$RUNNER_TEMP/trial-resolver-venv"
-          "$RUNNER_TEMP/trial-resolver-venv/bin/python" -m pip install --upgrade pip
+          python3.12 scripts/bootstrap_trial_conda.py \
+            --system linux \
+            --architecture x86_64 \
+            --prefix "$RUNNER_TEMP/trial-miniforge"
+          "$RUNNER_TEMP/trial-miniforge/bin/conda" create \
+            --yes --quiet --override-channels --channel conda-forge \
+            --prefix "$RUNNER_TEMP/trial-capture-runner" \
+            python=3.12 pip
           wheel=("$RUNNER_TEMP"/trial-seed/*.whl)
           test "${#wheel[@]}" -eq 1
-          "$RUNNER_TEMP/trial-resolver-venv/bin/python" scripts/capture_trial_resolution.py \
-            --trial-target wsl2-ubuntu24 \
+          export QT_QPA_PLATFORM=offscreen
+          export GIT_OPTIONAL_LOCKS=0
+          "$RUNNER_TEMP/trial-capture-runner/bin/python" scripts/capture_trial_resolution.py \
+            --trial-target ubuntu24-x86_64 \
+            --backend conda \
+            --conda-executable "$RUNNER_TEMP/trial-miniforge/bin/conda" \
             --wheel "${wheel[0]}" \
             --trial-manifest "$RUNNER_TEMP/trial-seed/TRIAL-MANIFEST.json" \
             --source-manifest "$RUNNER_TEMP/trial-seed/SOURCE-MANIFEST.json" \
@@ -177,7 +195,213 @@ jobs:
             --checkout "$GITHUB_WORKSPACE" \
             --output "$RUNNER_TEMP/qualification"
 
-      - name: Upload native Linux qualification evidence
+      - name: Upload native Ubuntu qualification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trial-resolution-${{ inputs.trial_target }}-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+
+  qualify-debian:
+    name: Qualify Debian 13 x86_64 runtime closure in pinned container
+    if: inputs.trial_target == 'debian13-x86_64'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Check out P for the sealed gate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Recheck qualification checkout identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Download the immutable seed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-seed-${{ inputs.trial_target }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-seed
+
+      - name: Verify the downloaded seed
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/verify_trial_seed.py \
+            --seed "$RUNNER_TEMP/trial-seed" \
+            --source-sha "$SOURCE_SHA"
+
+      - name: Run the Debian capture in the digest-pinned nonroot container
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          DEBIAN_IMAGE="$(python3.12 - <<'PY'
+          from scripts.trial_toolchain import debian_container_reference
+          print(debian_container_reference())
+          PY
+          )"
+          mkdir -p "$RUNNER_TEMP/debian-output" "$RUNNER_TEMP/debian-state"
+          docker run --rm --interactive --platform linux/amd64 \
+            -e SOURCE_SHA="$SOURCE_SHA" \
+            -v "$GITHUB_WORKSPACE:/work/source:ro" \
+            -v "$RUNNER_TEMP/trial-seed:/work/seed:ro" \
+            -v "$RUNNER_TEMP/debian-output:/work/output" \
+            -v "$RUNNER_TEMP/debian-state:/work/state" \
+            "$DEBIAN_IMAGE" bash -s <<'CONTAINER'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            bash ca-certificates curl git python3 util-linux \
+            libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libdbus-1-3 \
+            libxkbcommon0 libzstd1
+          useradd --create-home --shell /bin/bash --uid 1000 trial
+          chown -R trial:trial /work/output /work/state
+          runuser -u trial -- env \
+            HOME=/home/trial \
+            GIT_OPTIONAL_LOCKS=0 \
+            PYTHONNOUSERSITE=1 \
+            SOURCE_SHA="$SOURCE_SHA" \
+            /bin/bash -s <<'RUNNER'
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          git config --global --add safe.directory /work/source
+          /usr/bin/python3 /work/source/scripts/bootstrap_trial_conda.py \
+            --system linux \
+            --architecture x86_64 \
+            --prefix /work/state/trial-miniforge
+          /work/state/trial-miniforge/bin/conda create \
+            --yes --quiet --override-channels --channel conda-forge \
+            --prefix /work/state/trial-capture-runner \
+            python=3.12 pip
+          wheel=(/work/seed/*.whl)
+          test "${#wheel[@]}" -eq 1
+          export QT_QPA_PLATFORM=offscreen
+          /work/state/trial-capture-runner/bin/python \
+            /work/source/scripts/verify_trial_seed.py \
+            --seed /work/seed --source-sha "$SOURCE_SHA"
+          /work/state/trial-capture-runner/bin/python \
+            /work/source/scripts/capture_trial_resolution.py \
+            --trial-target debian13-x86_64 \
+            --backend conda \
+            --conda-executable /work/state/trial-miniforge/bin/conda \
+            --wheel "${wheel[0]}" \
+            --trial-manifest /work/seed/TRIAL-MANIFEST.json \
+            --source-manifest /work/seed/SOURCE-MANIFEST.json \
+            --staging-manifest /work/seed/STAGING-MANIFEST.json \
+            --checkout /work/source --output /work/output/qualification
+          RUNNER
+          CONTAINER
+
+      - name: Upload Debian qualification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trial-resolution-${{ inputs.trial_target }}-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/debian-output/qualification/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+
+  qualify-linux:
+    name: Qualify ${{ matrix.architecture }} Linux WSL2 closure
+    if: inputs.trial_target == 'wsl2-ubuntu24'
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-24.04
+          - architecture: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out P for the sealed gate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Recheck qualification checkout identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Download the immutable seed
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-seed-${{ inputs.trial_target }}-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/trial-seed
+
+      - name: Verify the downloaded seed
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/verify_trial_seed.py \
+            --seed "$RUNNER_TEMP/trial-seed" \
+            --source-sha "$SOURCE_SHA"
+
+      - name: Install Qt GL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libdbus-1-3 \
+            libxkbcommon0 libzstd1
+
+      - name: Bootstrap conda and qualify the WSL2 closure
+        shell: bash
+        env:
+          BOOTSTRAP_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/bootstrap_trial_conda.py \
+            --system linux \
+            --architecture "$BOOTSTRAP_ARCHITECTURE" \
+            --prefix "$RUNNER_TEMP/trial-miniforge"
+          "$RUNNER_TEMP/trial-miniforge/bin/conda" create \
+            --yes --quiet --override-channels --channel conda-forge \
+            --prefix "$RUNNER_TEMP/trial-capture-runner" \
+            python=3.12 pip
+          wheel=("$RUNNER_TEMP"/trial-seed/*.whl)
+          test "${#wheel[@]}" -eq 1
+          export QT_QPA_PLATFORM=offscreen
+          export GIT_OPTIONAL_LOCKS=0
+          "$RUNNER_TEMP/trial-capture-runner/bin/python" scripts/capture_trial_resolution.py \
+            --trial-target wsl2-ubuntu24 \
+            --backend conda \
+            --conda-executable "$RUNNER_TEMP/trial-miniforge/bin/conda" \
+            --wheel "${wheel[0]}" \
+            --trial-manifest "$RUNNER_TEMP/trial-seed/TRIAL-MANIFEST.json" \
+            --source-manifest "$RUNNER_TEMP/trial-seed/SOURCE-MANIFEST.json" \
+            --staging-manifest "$RUNNER_TEMP/trial-seed/STAGING-MANIFEST.json" \
+            --checkout "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/qualification"
+
+      - name: Upload WSL2 Linux qualification evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: trial-resolution-${{ inputs.trial_target }}-${{ matrix.architecture }}-${{ github.run_id }}-a${{ github.run_attempt }}
@@ -187,11 +411,11 @@ jobs:
           overwrite: false
 
   qualify-macos:
-    name: Qualify macOS 15 ARM64 runtime closure
+    name: Qualify native macOS 15 ARM64 runtime closure
     if: inputs.trial_target == 'macos15-arm64'
     needs: prepare
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out P for the sealed gate source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -207,7 +431,14 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           test "$(uname -m)" = arm64
+          python3 - <<'PY'
+          import platform
+          major = int(platform.mac_ver()[0].split(".", 1)[0])
+          if major < 15:
+              raise SystemExit("macOS 15 or newer is required")
+          PY
 
       - name: Download the immutable seed
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -225,16 +456,26 @@ jobs:
             --seed "$RUNNER_TEMP/trial-seed" \
             --source-sha "$SOURCE_SHA"
 
-      - name: Resolve, reinstall, and qualify macOS ARM64
+      - name: Bootstrap conda and qualify native Cocoa
         shell: bash
         run: |
           set -euo pipefail
-          python3.12 -m venv "$RUNNER_TEMP/trial-resolver-venv"
-          "$RUNNER_TEMP/trial-resolver-venv/bin/python" -m pip install --upgrade pip
+          python3.12 scripts/bootstrap_trial_conda.py \
+            --system darwin \
+            --architecture arm64 \
+            --prefix "$RUNNER_TEMP/trial-miniforge"
+          "$RUNNER_TEMP/trial-miniforge/bin/conda" create \
+            --yes --quiet --override-channels --channel conda-forge \
+            --prefix "$RUNNER_TEMP/trial-capture-runner" \
+            python=3.12 pip
           wheel=("$RUNNER_TEMP"/trial-seed/*.whl)
           test "${#wheel[@]}" -eq 1
-          "$RUNNER_TEMP/trial-resolver-venv/bin/python" scripts/capture_trial_resolution.py \
+          unset QT_QPA_PLATFORM
+          export GIT_OPTIONAL_LOCKS=0
+          "$RUNNER_TEMP/trial-capture-runner/bin/python" scripts/capture_trial_resolution.py \
             --trial-target macos15-arm64 \
+            --backend conda \
+            --conda-executable "$RUNNER_TEMP/trial-miniforge/bin/conda" \
             --wheel "${wheel[0]}" \
             --trial-manifest "$RUNNER_TEMP/trial-seed/TRIAL-MANIFEST.json" \
             --source-manifest "$RUNNER_TEMP/trial-seed/SOURCE-MANIFEST.json" \
@@ -242,7 +483,7 @@ jobs:
             --checkout "$GITHUB_WORKSPACE" \
             --output "$RUNNER_TEMP/qualification"
 
-      - name: Upload macOS ARM64 qualification evidence
+      - name: Upload native macOS qualification evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: trial-resolution-${{ inputs.trial_target }}-arm64-${{ github.run_id }}-a${{ github.run_attempt }}
@@ -255,11 +496,13 @@ jobs:
     name: Assemble target-specific participant assets
     if: >-
       always() && needs.prepare.result == 'success' &&
-      ((inputs.trial_target == 'wsl2-ubuntu24' && needs.qualify-linux.result == 'success') ||
+      ((inputs.trial_target == 'ubuntu24-x86_64' && needs.qualify-ubuntu.result == 'success') ||
+       (inputs.trial_target == 'debian13-x86_64' && needs.qualify-debian.result == 'success') ||
+       (inputs.trial_target == 'wsl2-ubuntu24' && needs.qualify-linux.result == 'success') ||
        (inputs.trial_target == 'macos15-arm64' && needs.qualify-macos.result == 'success'))
-    needs: [prepare, qualify-linux, qualify-macos]
+    needs: [prepare, qualify-ubuntu, qualify-debian, qualify-linux, qualify-macos]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Check out P for source-bound platform documents
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -275,6 +518,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
       - name: Download the immutable seed
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -292,14 +536,28 @@ jobs:
             --seed "$RUNNER_TEMP/trial-seed" \
             --source-sha "$SOURCE_SHA"
 
-      - name: Download x86_64 resolution
+      - name: Download native Ubuntu resolution
+        if: inputs.trial_target == 'ubuntu24-x86_64'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-resolution-${{ inputs.trial_target }}-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resolution-x86_64
+
+      - name: Download native Debian resolution
+        if: inputs.trial_target == 'debian13-x86_64'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: trial-resolution-${{ inputs.trial_target }}-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resolution-x86_64
+
+      - name: Download WSL2 x86_64 resolution
         if: inputs.trial_target == 'wsl2-ubuntu24'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: trial-resolution-${{ inputs.trial_target }}-x86_64-${{ github.run_id }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/resolution-x86_64
 
-      - name: Download aarch64 resolution
+      - name: Download WSL2 aarch64 resolution
         if: inputs.trial_target == 'wsl2-ubuntu24'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -321,22 +579,42 @@ jobs:
           set -euo pipefail
           wheel=("$RUNNER_TEMP"/trial-seed/*.whl)
           test "${#wheel[@]}" -eq 1
-          evidence=()
-          if test "$TRIAL_TARGET" = wsl2-ubuntu24; then
-            evidence+=(
-              --constraints-x86-64 "$RUNNER_TEMP/resolution-x86_64/constraints-ubuntu24-x86_64.txt"
-              --resolution-x86-64 "$RUNNER_TEMP/resolution-x86_64/resolution-ubuntu24-x86_64.json"
-              --constraints-aarch64 "$RUNNER_TEMP/resolution-aarch64/constraints-ubuntu24-aarch64.txt"
-              --resolution-aarch64 "$RUNNER_TEMP/resolution-aarch64/resolution-ubuntu24-aarch64.json"
-            )
-            docs=docs/trial/wsl2
-          else
-            evidence+=(
-              --constraints-arm64 "$RUNNER_TEMP/resolution-arm64/constraints-macos15-arm64.txt"
-              --resolution-arm64 "$RUNNER_TEMP/resolution-arm64/resolution-macos15-arm64.json"
-            )
-            docs=docs/trial/macos
-          fi
+          case "$TRIAL_TARGET" in
+            ubuntu24-x86_64)
+              evidence=(
+                --constraints-x86-64 "$RUNNER_TEMP/resolution-x86_64/constraints-ubuntu24-x86_64.txt"
+                --resolution-x86-64 "$RUNNER_TEMP/resolution-x86_64/resolution-ubuntu24-x86_64.json"
+              )
+              docs=docs/trial/ubuntu
+              ;;
+            debian13-x86_64)
+              evidence=(
+                --constraints-x86-64 "$RUNNER_TEMP/resolution-x86_64/constraints-debian13-x86_64.txt"
+                --resolution-x86-64 "$RUNNER_TEMP/resolution-x86_64/resolution-debian13-x86_64.json"
+              )
+              docs=docs/trial/debian
+              ;;
+            wsl2-ubuntu24)
+              evidence=(
+                --constraints-x86-64 "$RUNNER_TEMP/resolution-x86_64/constraints-ubuntu24-x86_64.txt"
+                --resolution-x86-64 "$RUNNER_TEMP/resolution-x86_64/resolution-ubuntu24-x86_64.json"
+                --constraints-aarch64 "$RUNNER_TEMP/resolution-aarch64/constraints-ubuntu24-aarch64.txt"
+                --resolution-aarch64 "$RUNNER_TEMP/resolution-aarch64/resolution-ubuntu24-aarch64.json"
+              )
+              docs=docs/trial/wsl2
+              ;;
+            macos15-arm64)
+              evidence=(
+                --constraints-arm64 "$RUNNER_TEMP/resolution-arm64/constraints-macos15-arm64.txt"
+                --resolution-arm64 "$RUNNER_TEMP/resolution-arm64/resolution-macos15-arm64.json"
+              )
+              docs=docs/trial/macos
+              ;;
+            *)
+              echo "unsupported trial target" >&2
+              exit 1
+              ;;
+          esac
           python3.12 scripts/assemble_trial_bundle.py \
             --trial-target "$TRIAL_TARGET" \
             --output "$RUNNER_TEMP/trial-bundle" \

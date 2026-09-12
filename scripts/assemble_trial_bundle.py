@@ -42,7 +42,11 @@ try:  # Support both ``python scripts/...`` and ``import scripts...``.
         manifest_digest,
     )
     from .run_trial_technical_gate import GateError, read_gate_result
-    from .trial_targets import TrialTarget, TrialTargetError, trial_target
+    from .trial_targets import TrialTarget, TrialTargetError, target_ids, trial_target
+    from .trial_toolchain import (
+        ToolchainError,
+        conda_environment_manager_record,
+    )
 except ImportError:  # pragma: no cover - exercised by direct CLI invocation.
     import capture_trial_resolution as _trial_resolution  # type: ignore[no-redef]
     from build_trial_wheel import (  # type: ignore[no-redef]
@@ -72,7 +76,12 @@ except ImportError:  # pragma: no cover - exercised by direct CLI invocation.
     from trial_targets import (  # type: ignore[no-redef]
         TrialTarget,
         TrialTargetError,
+        target_ids,
         trial_target,
+    )
+    from trial_toolchain import (  # type: ignore[no-redef]
+        ToolchainError,
+        conda_environment_manager_record,
     )
 
 
@@ -195,6 +204,16 @@ _MACOS_RESOLUTION_FIELDS = {
     "technical_gate",
     "version",
     "wheel",
+}
+_CONDA_LINUX_RESOLUTION_FIELDS = _RESOLUTION_FIELDS | {
+    "environment_manager",
+    "phase_replay",
+    "target_id",
+}
+_CONDA_MACOS_RESOLUTION_FIELDS = _MACOS_RESOLUTION_FIELDS | {
+    "environment_manager",
+    "phase_replay",
+    "target_id",
 }
 
 
@@ -732,11 +751,27 @@ def _validate_resolution(
     target: TrialTarget | None = None,
 ) -> dict[str, object]:
     document = _canonical_object(resolution_bytes, f"{architecture} resolution")
-    expected_fields = (
-        _MACOS_RESOLUTION_FIELDS
-        if target is not None and target.id == "macos15-arm64"
-        else _RESOLUTION_FIELDS
-    )
+    is_conda_schema = target is not None
+    if is_conda_schema:
+        expected_fields = (
+            _CONDA_MACOS_RESOLUTION_FIELDS
+            if target.id == "macos15-arm64"
+            else _CONDA_LINUX_RESOLUTION_FIELDS
+        )
+        if document.get("schema") != 4:
+            raise TrialBundleError(
+                "explicit target resolution requires schema 4 evidence"
+            )
+        try:
+            _trial_resolution.read_resolution_document(document)
+        except _trial_resolution.ResolutionError as exc:
+            raise TrialBundleError("resolution schema is invalid") from exc
+    else:
+        expected_fields = (
+            _MACOS_RESOLUTION_FIELDS
+            if target is not None and target.id == "macos15-arm64"
+            else _RESOLUTION_FIELDS
+        )
     if not isinstance(document, dict) or set(document) != expected_fields:
         raise TrialBundleError("resolution schema is invalid")
     return _validate_resolution_document(
@@ -769,7 +804,14 @@ def _validate_resolution_document(
     target: TrialTarget | None = None,
 ) -> dict[str, object]:
     """Bind one captured native closure to the final wheel identity."""
-    expected_schema = 3 if target is not None and target.id == "macos15-arm64" else 2
+    is_conda_schema = document.get("schema") == 4
+    expected_schema = (
+        4
+        if is_conda_schema
+        else 3
+        if target is not None and target.id == "macos15-arm64"
+        else 2
+    )
     if (
         document.get("schema") != expected_schema
         or document.get("architecture") != architecture
@@ -788,14 +830,55 @@ def _validate_resolution_document(
     for field, expected in identities.items():
         if document.get(field) != expected:
             raise TrialBundleError("resolution identity does not match the wheel")
+    if is_conda_schema:
+        assert target is not None
+        if document.get("target_id") != target.id:
+            raise TrialBundleError("resolution target does not match the bundle")
+        manager = _mapping(
+            document.get("environment_manager"), "resolution environment manager"
+        )
+        _require_keys(
+            manager,
+            {"kind", "requested_specs", "subdir", "version"},
+            "resolution environment manager",
+        )
+        manager_version = manager.get("version")
+        if not isinstance(manager_version, str) or _VERSION.fullmatch(
+            manager_version
+        ) is None:
+            raise TrialBundleError("resolution conda version is invalid")
+        try:
+            expected_manager = conda_environment_manager_record(
+                target_id=target.id,
+                architecture=architecture,
+                version=manager_version,
+            )
+        except ToolchainError as exc:
+            raise TrialBundleError("resolution environment manager is invalid") from exc
+        if dict(manager) != expected_manager:
+            raise TrialBundleError("resolution environment manager is not target-bound")
     if target is not None and target.id == "macos15-arm64":
         _validate_macos_platform(document.get("platform"), architecture)
     else:
-        if document.get("os_id") != "ubuntu" or document.get("os_version") != "24.04":
-            raise TrialBundleError("resolution host is not Ubuntu 24.04")
+        expected_os = (
+            (target.os_id, target.os_version)
+            if is_conda_schema and target is not None
+            else ("ubuntu", "24.04")
+        )
+        if (
+            document.get("os_id") != expected_os[0]
+            or document.get("os_version") != expected_os[1]
+        ):
+            raise TrialBundleError("resolution host distribution does not match target")
         try:
             _trial_resolution.validate_os_runtime(
-                document.get("os_runtime"), machine=architecture
+                document.get("os_runtime"),
+                machine=architecture,
+                package_names=(
+                    _trial_resolution._SCHEMA4_OS_RUNTIME_PACKAGES
+                    if is_conda_schema
+                    else _trial_resolution._OS_RUNTIME_PACKAGES
+                ),
             )
         except _trial_resolution.ResolutionError as exc:
             raise TrialBundleError("resolution OS runtime is invalid") from exc
@@ -821,7 +904,11 @@ def _validate_resolution_document(
     _require_keys(wheel, {"filename", "sha256"}, "resolution wheel")
     if wheel.get("filename") != wheel_filename or wheel.get("sha256") != wheel_sha256:
         raise TrialBundleError("resolution wheel does not match the trial wheel")
-    phase_artifacts = _verify_resolution_phases(document)
+    phase_artifacts = _verify_resolution_phases(
+        document,
+        python_version=python_version,
+        pip_version=pip_version,
+    )
     runtime_artifacts = _runtime_artifact_records(document.get("runtime_artifacts"))
     expected_phase_artifacts = sorted(
         [
@@ -860,29 +947,48 @@ def _validate_resolution_document(
         or installed.get("version") != version
     ):
         raise TrialBundleError("resolution technical gate does not match the wheel")
+    if is_conda_schema and (
+        validated_gate["schema"] != 3
+        or set(validated_gate["checks"])
+        != set(_trial_resolution._CURRENT_GATE_CHECK_NAMES)
+    ):
+        raise TrialBundleError(
+            "schema-4 resolution requires the current technical-gate checks"
+        )
     return validated_gate
 
 
 def _verify_resolution_phases(
     document: Mapping[str, object],
+    *,
+    python_version: str,
+    pip_version: str,
 ) -> list[dict[str, str]]:
-    """Require the two fresh installs to describe one identical closure."""
+    """Require every persisted fresh install to describe its exact closure."""
+    is_conda_schema = document.get("schema") == 4
     projections: list[tuple[list[dict[str, str]], dict[str, list[dict[str, str]]]]] = []
-    for name in ("phase_one", "phase_two"):
+    conda_closures: list[list[dict[str, str]]] = []
+    phase_names = ("phase_one", "phase_two", "phase_replay") if is_conda_schema else (
+        "phase_one",
+        "phase_two",
+    )
+    for name in phase_names:
         phase = _mapping(document.get(name), f"resolution {name}")
-        _require_keys(
-            phase,
-            {
-                "artifacts",
-                "inspect",
-                "pip_inspect_sha256",
-                "pip_report_sha256",
-                "report",
-            },
-            f"resolution {name}",
-        )
+        phase_fields = {
+            "artifacts",
+            "inspect",
+            "pip_inspect_sha256",
+            "pip_report_sha256",
+            "report",
+        }
+        if is_conda_schema:
+            phase_fields.add("conda_packages")
+            phase_fields.add("import_isolation")
+        _require_keys(phase, phase_fields, f"resolution {name}")
         artifacts = _artifact_records(
-            phase["artifacts"], f"resolution {name} artifact", allow_studio=True
+            phase["artifacts"],
+            f"resolution {name} artifact",
+            allow_studio=name != "phase_replay",
         )
         inspect = _inspect_projection(phase["inspect"], f"resolution {name} inspect")
         for digest_name in ("pip_inspect_sha256", "pip_report_sha256"):
@@ -893,6 +999,28 @@ def _verify_resolution_phases(
             raise TrialBundleError("resolution phase report digest is invalid")
         if _sha256(_canonical_json(phase["inspect"])) != phase["pip_inspect_sha256"]:
             raise TrialBundleError("resolution phase inspect digest is invalid")
+        if is_conda_schema:
+            try:
+                conda_closures.append(
+                    _trial_resolution.validate_conda_package_records(
+                        phase["conda_packages"],
+                        python_version=python_version,
+                        pip_version=pip_version,
+                    )
+                )
+            except _trial_resolution.ResolutionError as exc:
+                raise TrialBundleError(
+                    "resolution conda package closure is invalid"
+                ) from exc
+            try:
+                _trial_resolution.validate_import_isolation(
+                    phase["import_isolation"],
+                    require_studio=name != "phase_replay",
+                )
+            except _trial_resolution.ResolutionError as exc:
+                raise TrialBundleError(
+                    "resolution import isolation evidence is invalid"
+                ) from exc
         projections.append((artifacts, inspect))
 
     phase_one_artifacts, phase_one_inspect = projections[0]
@@ -904,6 +1032,35 @@ def _verify_resolution_phases(
         raise TrialBundleError(
             "resolution phase closures differ between fresh installs"
         )
+    if is_conda_schema and conda_closures[0] != conda_closures[1]:
+        raise TrialBundleError(
+            "resolution conda closures differ between fresh installs"
+        )
+    if is_conda_schema:
+        phase_one_artifacts, phase_one_inspect = projections[0]
+        replay_artifacts, replay_inspect = projections[2]
+        expected_replay_artifacts = [
+            item for item in phase_one_artifacts if item["name"] != "gwexpy-studio"
+        ]
+        expected_replay_inspect = [
+            item
+            for item in phase_one_inspect["installed"]
+            if item["name"] != "gwexpy-studio"
+        ]
+        if (
+            replay_artifacts != expected_replay_artifacts
+            or replay_inspect["installed"] != expected_replay_inspect
+        ):
+            raise TrialBundleError(
+                "resolution replay closure is not the Studio-free runtime closure"
+            )
+        if not (
+            conda_closures[2] == conda_closures[0]
+            and conda_closures[2] == conda_closures[1]
+        ):
+            raise TrialBundleError(
+                "resolution replay conda closure differs from phase one"
+            )
     expected_installed = {
         (record["name"], record["version"]) for record in phase_one_artifacts
     }
@@ -1069,11 +1226,27 @@ def _verify_architecture_bundle_record(
     ):
         raise TrialBundleError("bundle resolution digest is invalid")
     document = _canonical_object(resolution_bytes, "bundle resolution")
-    expected_fields = (
-        _MACOS_RESOLUTION_FIELDS
-        if target is not None and target.id == "macos15-arm64"
-        else _RESOLUTION_FIELDS
-    )
+    resolution_schema = document.get("schema")
+    if resolution_schema == 4:
+        if target is None:
+            raise TrialBundleError("bundle resolution schema is invalid")
+        expected_fields = (
+            _CONDA_MACOS_RESOLUTION_FIELDS
+            if target.id == "macos15-arm64"
+            else _CONDA_LINUX_RESOLUTION_FIELDS
+        )
+        try:
+            _trial_resolution.read_resolution_document(document)
+        except _trial_resolution.ResolutionError as exc:
+            raise TrialBundleError("bundle resolution schema is invalid") from exc
+    elif target is None and resolution_schema == 2:
+        expected_fields = _RESOLUTION_FIELDS
+    elif target is not None and target.id == "wsl2-ubuntu24" and resolution_schema == 2:
+        expected_fields = _RESOLUTION_FIELDS
+    elif target is not None and target.id == "macos15-arm64" and resolution_schema == 3:
+        expected_fields = _MACOS_RESOLUTION_FIELDS
+    else:
+        raise TrialBundleError("bundle resolution schema is invalid")
     if not isinstance(document, dict) or set(document) != expected_fields:
         raise TrialBundleError("bundle resolution schema is invalid")
     gate = _validate_resolution_document(
@@ -1689,7 +1862,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trial-manifest", required=True, type=Path)
     parser.add_argument("--source-manifest", required=True, type=Path)
     parser.add_argument("--staging-manifest", required=True, type=Path)
-    parser.add_argument("--trial-target", choices=("wsl2-ubuntu24", "macos15-arm64"))
+    parser.add_argument("--trial-target", choices=target_ids())
     parser.add_argument("--constraints-x86-64", type=Path)
     parser.add_argument("--resolution-x86-64", type=Path)
     parser.add_argument("--constraints-aarch64", type=Path)

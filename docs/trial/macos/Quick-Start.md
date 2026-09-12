@@ -1,62 +1,133 @@
 # GWexpy Studio macOS trial quick start
 
-This guide applies only to the `macos15-arm64` prerelease on an Apple Silicon
-Mac running macOS 15 or later. Do not use it on an Intel Mac, WSL2, or Linux.
+This guide applies only to the `macos15-arm64` prerelease on an Apple Silicon Mac running macOS 15 or later.
+Do not use it on an Intel Mac, WSL2, or Linux.
 
-This human trial must be your first manual use of GWexpy Studio. Install conda
-before starting. Git, a source checkout, and an editable install are not needed.
+Git, source-code operations, and a GitHub account are not required.
+The trial uses a dedicated conda environment and does not use the OS Python or the user site.
+Confirm the available distribution and verified macOS version from the trial coordinator.
 
-Record environment setup and installation time separately from the workflow
-time. Start the workflow timer when the Welcome screen appears.
+## Prerequisites
+
+Use an Apple Silicon Mac running macOS 15 or later with a normal desktop session.
+Have conda available in the original shell, a network for conda and pip, `unzip`, `shasum`, and bash.
 
 ## Download and verify
 
-Download the ZIP and matching `.zip.sha256` file from the single prerelease link
-into an empty directory. Then run:
+Download the ZIP and its matching `.zip.sha256` sidecar from the supplied prerelease link into an empty directory.
+macOS's standard zsh does not run bash array syntax, so run the checks and installation in bash.
+
+First, in the original shell where conda is available, obtain the conda paths and then start bash.
+Do not type or replace a conda base path manually.
+
+```zsh
+if ! CONDA_BASE="$(conda info --base)"; then
+  echo "conda info --base failed; stop before starting bash" >&2
+  exit 1
+fi
+export CONDA_BASE
+export CONDA_EXE="$CONDA_BASE/bin/conda"
+export CONDA_SH="$CONDA_BASE/etc/profile.d/conda.sh"
+if ! test -x "$CONDA_EXE"; then
+  echo "conda executable was not found; stop before starting bash" >&2
+  exit 1
+fi
+if ! test -r "$CONDA_SH"; then
+  echo "conda initialization script was not found; stop before starting bash" >&2
+  exit 1
+fi
+/bin/bash --noprofile --norc
+```
+
+In that bash, run:
 
 ```bash
-set -euo pipefail
+set -e
+if ! source "$CONDA_SH"; then
+  echo "conda initialization failed" >&2
+  exit 1
+fi
+set -u
+set -o pipefail
+shopt -s nullglob
+
+test "$(uname -m)" = "arm64"
+macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+test "$macos_major" -ge 15
+sw_vers
+
+zips=(gwexpy-studio-trial-macos15-arm64-*.zip)
 sidecars=(gwexpy-studio-trial-macos15-arm64-*.zip.sha256)
+test "${#zips[@]}" -eq 1
 test "${#sidecars[@]}" -eq 1
-shasum -a 256 -c "${sidecars[0]}"
-archive="${sidecars[0]%.sha256}"
+archive="${zips[0]}"
+sidecar="${sidecars[0]}"
+test "${sidecar%.sha256}" = "$archive"
+shasum -a 256 -c "$sidecar"
 unzip "$archive"
 bundle="${archive%.zip}"
+test -d "$bundle"
 cd "$bundle"
 shasum -a 256 -c SHA256SUMS
 ```
 
-Every checksum must report `OK`. Stop without installing if a check fails.
+Every ZIP, sidecar, and internal `SHA256SUMS` check must report `OK`.
+If selection is not unique or any check fails, stop and contact the trial coordinator.
 
-## Confirm the Mac
+## Install into an isolated conda environment
 
-```bash
-set -euo pipefail
-test "$(uname -m)" = "arm64"
-test "$(sw_vers -productVersion | cut -d. -f1)" -ge 15
-sw_vers
-```
-
-Stop and report the output if a command fails.
-
-## Create an isolated environment and install
+The commands below do not overwrite an existing environment with the same name.
+If it already exists, do not delete or change it; contact the trial coordinator.
 
 ```bash
-conda create -n gwexpy-studio-macos python=3.12
-conda activate gwexpy-studio-macos
+env_name=gwexpy-studio-macos
+if ! env_list="$(conda env list)"; then
+  echo "conda env list failed; stop" >&2
+  exit 1
+fi
+if printf '%s\n' "$env_list" | awk -v name="$env_name" '$1 == name { found=1 } END { exit found ? 0 : 1 }'; then
+  echo "conda environment already exists: $env_name; do not overwrite it" >&2
+  exit 2
+fi
+
+conda create -n "$env_name" python=3.12 pip
+conda activate "$env_name"
 export PYTHONNOUSERSITE=1
 unset PYTHONPATH
+python - <<'PY'
+import platform
+import sys
+
+assert sys.version_info[:2] == (3, 12)
+assert platform.machine() == "arm64"
+PY
 python --version
 conda --version
-pip --version
-pip install --only-binary=:all: \
-  -c constraints-macos15-arm64.txt \
-  ./gwexpy_studio-*.whl
+python -m pip --version
+
+constraints_path=constraints-macos15-arm64.txt
+wheel=(gwexpy_studio-*.whl)
+test -f "$constraints_path"
+test "${#wheel[@]}" -eq 1
+wheel_path="${wheel[0]}"
+test -f "$wheel_path"
+python -m pip install --only-binary=:all: \
+  -c "$constraints_path" \
+  "$wheel_path"
 ```
 
-Keep the environment active and repeat the two environment settings in every
-new terminal used for the trial. Do not change constraints, build from source,
-or try a workaround if installation or launch fails.
+The wheel is accepted only when the array contains exactly one candidate.
+Keep this activated conda environment in the bash used for the trial.
+If a new terminal is needed, confirm conda in its original shell, start bash, and run this short block:
+
+```bash
+if ! source "$CONDA_SH"; then exit 1; fi
+if ! conda activate gwexpy-studio-macos; then exit 1; fi
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+```
+
+If installation or launch fails, do not change the instructions; contact the trial coordinator.
 
 ## Run the workflow
 
@@ -64,14 +135,22 @@ or try a workaround if installation or launch fails.
 gwexpy-studio
 ```
 
-From the Welcome screen, complete **Try Sample → Load → Crop → ASD → Save →
-Close → Open**. Exercise the native file picker when saving and reopening. If
-Review or Restore appears, record whether you can continue from it. Open About
-and record its Build ID.
+When the application is visible, run:
 
-If launch, project reopen, or recovery cannot continue, do not try a workaround.
-Record the step, screen, and terminal output, then stop.
+`Try Sample → Load → Crop → ASD → Save → Close → Open`
 
-Complete `Feedback.ja.md` and reply to the email or chat that supplied the
-prerelease link. Do not send confidential measurement data, credentials,
-usernames, hostnames, paths, or unrelated logs.
+Use the file selection window for Save and Open, including a save location containing Japanese characters and spaces.
+Record display-scaling problems if they appear.
+This distribution checks reading of time-series CSV files.
+Unsupported types are shown as unavailable in the application.
+Record Review or Restore only if it is shown, including whether continuation worked.
+Open About and record the Build ID.
+
+Record the result of the normal Save → Close → Open sequence.
+If launch, reopen, or recovery cannot continue, contact the trial coordinator with the error shown and the operation immediately before it.
+Before sending, redact usernames, hostnames, personal save locations, credentials, and confidential measurement data.
+
+## Feedback
+
+Complete `Feedback.ja.md` with observed facts and reply to the supplied email or chat.
+No GitHub account is required.
