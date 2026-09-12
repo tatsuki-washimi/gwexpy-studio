@@ -254,9 +254,15 @@ jobs:
           print(debian_container_reference())
           PY
           )"
+          RUNNER_UID="$(id -u)"
+          case "$RUNNER_UID" in
+            ''|*[!0-9]*) echo "runner UID is not a decimal value" >&2; exit 1 ;;
+          esac
+          test "$RUNNER_UID" -gt 0
           mkdir -p "$RUNNER_TEMP/debian-output" "$RUNNER_TEMP/debian-state"
           docker run --rm --interactive --platform linux/amd64 \
             -e SOURCE_SHA="$SOURCE_SHA" \
+            -e RUNNER_UID="$RUNNER_UID" \
             -v "$GITHUB_WORKSPACE:/work/source:ro" \
             -v "$RUNNER_TEMP/trial-seed:/work/seed:ro" \
             -v "$RUNNER_TEMP/debian-output:/work/output" \
@@ -264,21 +270,27 @@ jobs:
             "$DEBIAN_IMAGE" bash -s <<'CONTAINER'
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
+          case "$RUNNER_UID" in
+            ''|*[!0-9]*) echo "runner UID is not a decimal value" >&2; exit 1 ;;
+          esac
+          test "$RUNNER_UID" -gt 0
           apt-get update
           apt-get install --no-install-recommends -y \
             bash ca-certificates curl git python3 util-linux \
             libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libdbus-1-3 \
             libxkbcommon0 libzstd1
-          useradd --create-home --shell /bin/bash --uid 1000 trial
+          useradd --create-home --shell /bin/bash --uid "$RUNNER_UID" trial
           chown -R trial:trial /work/output /work/state
           runuser -u trial -- env \
             HOME=/home/trial \
             GIT_OPTIONAL_LOCKS=0 \
             PYTHONNOUSERSITE=1 \
+            RUNNER_UID="$RUNNER_UID" \
             SOURCE_SHA="$SOURCE_SHA" \
             /bin/bash -s <<'RUNNER'
           set -euo pipefail
           test "$(id -u)" -ne 0
+          test "$(id -u)" = "$RUNNER_UID"
           git config --global --add safe.directory /work/source
           /usr/bin/python3 /work/source/scripts/bootstrap_trial_conda.py \
             --system linux \

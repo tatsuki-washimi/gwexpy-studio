@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -257,7 +258,14 @@ def test_build_trial_workflow_routes_four_targets_and_five_capture_configuration
     assert ":ro\"" in workflow
     assert "runuser -u trial" in workflow
     assert "docker run --rm --interactive --platform linux/amd64" in workflow
+    assert 'RUNNER_UID="$(id -u)"' in workflow
+    assert '-e RUNNER_UID="$RUNNER_UID"' in workflow
+    assert (
+        'useradd --create-home --shell /bin/bash --uid "$RUNNER_UID" trial'
+        in workflow
+    )
     assert 'test "$(id -u)" -ne 0' in workflow
+    assert 'test "$(id -u)" = "$RUNNER_UID"' in workflow
     assert "--checkout /work/source --output /work/output/qualification" in workflow
     assert "path: ${{ runner.temp }}/debian-output/qualification/*" in workflow
     assert "GIT_OPTIONAL_LOCKS=0" in workflow
@@ -298,6 +306,69 @@ def test_build_trial_workflow_routes_four_targets_and_five_capture_configuration
     upload_block = workflow[upload_start:]
     assert "path: ${{ runner.temp }}/trial-release/*" in upload_block
     assert "${{ runner.temp }}/trial-bundle/*" not in upload_block
+
+
+def test_debian_capture_forwards_runner_uid_to_container_user(tmp_path: Path) -> None:
+    """The private 0700 evidence directory remains traversable after Docker."""
+    workflow = _workflow("build-trial-wheel.yml")
+    start = workflow.index(
+        "      - name: Run the Debian capture in the digest-pinned nonroot container"
+    )
+    end = workflow.index("\n      - name: Upload Debian qualification evidence", start)
+    section = workflow[start:end]
+    block = textwrap.dedent(section.split("        run: |\n", 1)[1])
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "id").write_text(
+        "#!/bin/sh\nprintf '%s\\n' 2001\n", encoding="ascii"
+    )
+    (fake_bin / "python3.12").write_text(
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' 'debian:13@sha256:"
+        + "1" * 64
+        + "'\n",
+        encoding="ascii",
+    )
+    (fake_bin / "docker").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf '%s\\n' \"$@\" > \"$DOCKER_ARGS\"\n"
+        "cat > \"$DOCKER_STDIN\"\n",
+        encoding="ascii",
+    )
+    for executable in ("id", "python3.12", "docker"):
+        (fake_bin / executable).chmod(0o755)
+
+    runner_temp = tmp_path / "runner-temp"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "GITHUB_WORKSPACE": str(tmp_path / "checkout"),
+        "RUNNER_TEMP": str(runner_temp),
+        "SOURCE_SHA": "a" * 40,
+        "DOCKER_ARGS": str(tmp_path / "docker-args"),
+        "DOCKER_STDIN": str(tmp_path / "docker-stdin"),
+    }
+    completed = subprocess.run(
+        ["bash", "-c", block],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    docker_args = (tmp_path / "docker-args").read_text(encoding="ascii").splitlines()
+    source_env = docker_args.index("-e")
+    runner_uid_env = docker_args.index("-e", source_env + 1)
+    assert docker_args[source_env + 1] == "SOURCE_SHA=" + "a" * 40
+    assert docker_args[runner_uid_env + 1] == "RUNNER_UID=2001"
+    container_script = (tmp_path / "docker-stdin").read_text(encoding="ascii")
+    assert 'useradd --create-home --shell /bin/bash --uid "$RUNNER_UID" trial' in (
+        container_script
+    )
+    assert 'RUNNER_UID="$RUNNER_UID"' in container_script
 
 
 def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> None:
