@@ -58,6 +58,26 @@ class _BindingScheduler:
         self.cleared += 1
 
 
+class _ReviewScheduler(_BindingScheduler):
+    """Deterministic Review scheduler double for the two-phase contract."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pre_dialog_started = False
+        self.pre_dialog_timeout = None
+        self.interaction_started = False
+        self.pre_dialog_callback = None
+
+    def start_pre_dialog(self, timeout_s: float, callback: object) -> None:
+        self.pre_dialog_started = True
+        self.pre_dialog_timeout = timeout_s
+        self.pre_dialog_callback = callback
+
+    def start_interaction(self) -> None:
+        self.interaction_started = True
+        self.handled = True
+
+
 class _HostileStopScheduler(_BindingScheduler):
     """Scheduler double whose stop method must not abort cleanup."""
 
@@ -581,13 +601,261 @@ def test_generic_review_binding_uses_explicit_instance_for_plain_callable() -> N
         assert window._modal_active is False
         assert updates == [True, False]
         assert binding.recovery_attempt == "unarmed"
-        assert stages == ["consumer/review-dialog-scheduler-bound"]
+        assert stages == []
     finally:
         binding.restore()
 
     assert module.workspace_dialog is workspace_dialog
     assert binding._scheduled == {}
     assert scheduler.cleared == 1
+
+
+def test_review_scheduler_stays_dormant_until_matching_result() -> None:
+    binding = _diagnostic_binding(record=lambda _stage: None)
+    scheduler = _ReviewScheduler()
+
+    binding.register_review(scheduler)
+    assert scheduler.pre_dialog_started is True
+    assert scheduler.pre_dialog_timeout > 15.0
+    assert scheduler.interaction_started is False
+    binding.correlate_review_dispatch("review-1")
+
+    assert binding.arm_review(command_id="other") is False
+    assert binding.review_attempt == "pending"
+    assert binding.arm_review(command_id="review-1") is True
+    assert binding.review_attempt == "armed"
+    assert scheduler.interaction_started is False
+    binding.restore()
+
+
+def test_dedicated_review_path_has_no_legacy_widget_discovery() -> None:
+    gate = _gate()
+    source = "\n".join(
+        (
+            inspect.getsource(gate._schedule_review_confirmation),
+            inspect.getsource(gate._WorkspaceMessageBinding._review_dialog),
+        )
+    )
+    for forbidden in (
+        "execute.__self__",
+        "windowTitle",
+        "activeModalWidget",
+        "topLevelWidgets",
+        ".text()",
+    ):
+        assert forbidden not in source
+    assert "QMessageBox.StandardButton.Ok" in source
+
+
+def test_review_terminal_tombstone_rejects_a_late_dialog_instance() -> None:
+    binding = _diagnostic_binding(record=lambda _stage: None, message_type=object)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    binding.correlate_review_dispatch("review-1")
+    binding.fail_review()
+    calls: list[str] = []
+
+    result = binding._workspace_module.workspace_dialog(
+        object(), lambda: calls.append("modal"), dialog_instance=object()
+    )
+
+    assert result is None
+    assert calls == []
+    assert binding.review_attempt == "tombstone"
+    assert scheduler.error is binding._review_error
+    binding.restore()
+
+
+def test_review_pre_dialog_timeout_tombstones_before_late_instance() -> None:
+    binding = _diagnostic_binding(record=lambda _stage: None, message_type=object)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    assert scheduler.pre_dialog_callback is not None
+    scheduler.pre_dialog_callback()
+    calls: list[str] = []
+
+    assert binding._workspace_module.workspace_dialog(
+        object(), lambda: calls.append("modal"), dialog_instance=object()
+    ) is None
+    assert calls == []
+    assert binding.review_attempt == "tombstone"
+    assert scheduler.error is not None
+    binding.restore()
+
+
+def test_review_timeout_callback_after_arm_is_ignored() -> None:
+    binding = _diagnostic_binding(record=lambda _stage: None, message_type=object)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    binding.correlate_review_dispatch("review-1")
+    assert binding.arm_review(command_id="review-1") is True
+
+    binding._review_timeout()
+
+    assert binding.review_attempt == "armed"
+    assert scheduler.error is None
+    binding.restore()
+
+
+@pytest.mark.parametrize("instance", [None, object()], ids=["missing", "wrong-type"])
+def test_dedicated_review_rejects_missing_or_wrong_instance(instance: object) -> None:
+    binding = _diagnostic_binding(record=lambda _stage: None, message_type=str)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    binding.correlate_review_dispatch("review-1")
+    assert binding.arm_review(command_id="review-1") is True
+    calls: list[str] = []
+
+    try:
+        assert binding._workspace_module.workspace_dialog(
+            object(), lambda: calls.append("modal"), dialog_instance=instance
+        ) is None
+        assert calls == []
+        assert scheduler.error is binding._review_error
+    finally:
+        binding.restore()
+
+
+def test_dedicated_review_accepts_plain_callable_with_explicit_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _gate()
+
+    class FakeMessageBox:
+        class StandardButton:
+            Ok = object()
+
+    fake_widgets = SimpleNamespace(QMessageBox=FakeMessageBox)
+    monkeypatch.setitem(sys.modules, "PySide6", SimpleNamespace(QtWidgets=fake_widgets))
+    monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", fake_widgets)
+    module = SimpleNamespace(
+        workspace_dialog=lambda _window, execute, *args, **kwargs: execute(
+            *args, **kwargs
+        )
+    )
+    binding = gate._WorkspaceMessageBinding(
+        workspace_module=module,
+        message_type=object,
+        record=lambda _stage: None,
+    )
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    binding.correlate_review_dispatch("review-1")
+    assert binding.arm_review(command_id="review-1") is True
+    sentinel = FakeMessageBox.StandardButton.Ok
+
+    try:
+        assert (
+            module.workspace_dialog(
+                object(), lambda: sentinel, dialog_instance=object()
+            )
+            is sentinel
+        )
+        assert binding.review_attempt == "consumed"
+    finally:
+        binding.restore()
+
+
+def test_review_modal_exception_is_re_raised_after_fixed_cleanup(monkeypatch):
+    gate = _gate()
+    sentinel = RuntimeError("modal failure")
+
+    class FakeMessageBox:
+        class StandardButton:
+            Ok = object()
+
+    fake_widgets = SimpleNamespace(QMessageBox=FakeMessageBox)
+    monkeypatch.setitem(sys.modules, "PySide6", SimpleNamespace(QtWidgets=fake_widgets))
+    monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", fake_widgets)
+    module = SimpleNamespace(
+        workspace_dialog=lambda _window, _execute, *args, **kwargs: (
+            (_ for _ in ()).throw(sentinel)
+        )
+    )
+    binding = gate._WorkspaceMessageBinding(
+        workspace_module=module,
+        message_type=object,
+        record=lambda _stage: None,
+    )
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    binding.correlate_review_dispatch("review-1")
+    assert binding.arm_review(command_id="review-1") is True
+
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            module.workspace_dialog(object(), lambda: None, dialog_instance=object())
+        assert caught.value is sentinel
+        assert binding.review_attempt == "tombstone"
+        assert scheduler.error is binding._review_error
+    finally:
+        binding.restore()
+
+
+def test_successful_review_stays_consumed_until_binding_restore(monkeypatch):
+    gate = _gate()
+
+    class FakeMessageBox:
+        class StandardButton:
+            Ok = object()
+
+    fake_widgets = SimpleNamespace(QMessageBox=FakeMessageBox)
+    monkeypatch.setitem(sys.modules, "PySide6", SimpleNamespace(QtWidgets=fake_widgets))
+    monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", fake_widgets)
+    calls: list[str] = []
+    module = SimpleNamespace(
+        workspace_dialog=lambda _window, execute, *args, **kwargs: execute(
+            *args, **kwargs
+        )
+    )
+    binding = gate._WorkspaceMessageBinding(
+        workspace_module=module,
+        message_type=object,
+        record=lambda _stage: None,
+    )
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    binding.correlate_review_dispatch("review-1")
+    assert binding.arm_review(command_id="review-1") is True
+
+    try:
+        assert (
+            module.workspace_dialog(
+                object(),
+                lambda: FakeMessageBox.StandardButton.Ok,
+                dialog_instance=object(),
+            )
+            is FakeMessageBox.StandardButton.Ok
+        )
+        assert binding.review_attempt == "consumed"
+        assert (
+            module.workspace_dialog(
+                object(), lambda: calls.append("late"), dialog_instance=object()
+            )
+            is None
+        )
+        assert calls == []
+    finally:
+        binding.restore()
+    assert binding.review_attempt == "unarmed"
+
+
+def test_duplicate_review_registration_fails_closed_and_cleans_both_schedulers(
+) -> None:
+    gate = _gate()
+    binding = _diagnostic_binding(record=lambda _stage: None)
+    first = _ReviewScheduler()
+    second = _ReviewScheduler()
+    binding.register_review(first)
+
+    with pytest.raises(gate.GateError, match="review dialog binding"):
+        binding.register_review(second)
+
+    assert first.error is binding._review_error
+    assert second.error is binding._review_error
+    assert first.cleared == 1
+    assert second.cleared == 1
+    binding.restore()
 
 
 def test_review_restore_callsite_passes_explicit_dialog_instance() -> None:
@@ -1588,59 +1856,30 @@ def test_workspace_dialog_binding_source_declares_exact_fixed_stages_and_record_
     assert "message_binding=" in inspect.getsource(gate._instrument_recovery_boundaries)
 
 
-def test_data_restore_diagnostics_declare_one_fixed_success_prefix() -> None:
+def test_review_diagnostics_are_not_public_gate_stages() -> None:
     gate = _gate()
+    capture = importlib.import_module("scripts.capture_trial_resolution")
 
-    assert gate._DATA_RESTORE_DIAGNOSTIC_STAGES == {
-        "consumer/recovery-binding-isolation-confirmed",
-        "consumer/review-restore-dispatch-accepted",
-        "consumer/review-restore-result-succeeded",
-        "consumer/review-dialog-scheduler-bound",
-        "consumer/review-dialog-modal-returned",
-        "consumer/restore-project-dispatch-accepted",
-        "consumer/restore-project-settled",
-    }
-    assert gate._DATA_RESTORE_DIAGNOSTIC_STAGES <= gate._ALLOWED_GATE_STAGE_PAIRS
-
-
-def test_review_dialog_records_bound_and_modal_success_prefix() -> None:
-    stages: list[str] = []
-    scheduler = _BindingScheduler()
-    scheduler.handled = True
-    sentinel = object()
-
-    class ReviewMessage:
-        def windowTitle(self) -> str:
-            return "Review restoration"
-
-        def execute(self) -> object:
-            return sentinel
-
-    binding = _diagnostic_binding(
-        record=stages.append,
-        message_type=ReviewMessage,
-    )
-    message = ReviewMessage()
-    binding.register("Review restoration", scheduler)
-    try:
-        result = binding._workspace_module.workspace_dialog(
-            object(), message.execute
-        )
-    finally:
-        binding.restore()
-
-    assert result is sentinel
-    assert scheduler.bound is message
-    assert stages == [
-        "consumer/review-dialog-scheduler-bound",
-        "consumer/review-dialog-modal-returned",
-    ]
+    assert not hasattr(gate, "_DATA_RESTORE_DIAGNOSTIC_STAGES")
+    for stage in (
+        "recovery-binding-isolation-confirmed",
+        "review-restore-dispatch-accepted",
+        "review-restore-result-succeeded",
+        "review-dialog-scheduler-bound",
+        "review-dialog-modal-returned",
+        "restore-project-dispatch-accepted",
+        "restore-project-settled",
+    ):
+        assert f"consumer/{stage}" not in gate._ALLOWED_GATE_STAGE_PAIRS
+        assert f"consumer/{stage}" not in capture._ALLOWED_GATE_STAGE_PAIRS
 
 
-def test_data_restore_dispatch_diagnostics_preserve_success_prefix() -> None:
+def test_review_dispatch_arms_before_application_handler() -> None:
     gate = _gate()
-    stages: list[str] = []
-    result = SimpleNamespace(success=True, payload={})
+    binding = _diagnostic_binding(record=lambda _stage: None)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    observed: list[str] = []
 
     def dispatch(
         _kind: str,
@@ -1650,45 +1889,204 @@ def test_data_restore_dispatch_diagnostics_preserve_success_prefix() -> None:
         pending_params: dict[str, object] | None = None,
     ) -> bool:
         del pending_action, pending_params
+        window._pending_command_id = "review-1"
         return True
+
+    def handle(_result: object) -> object:
+        observed.append(binding.review_attempt)
+        return "handled"
 
     window = SimpleNamespace(
         _dispatch_command=dispatch,
-        _handle_workspace_result=lambda _result: "handled",
+        _handle_workspace_result=handle,
         _pending_action="review_restore",
     )
     restore = gate._instrument_recovery_boundaries(
         window=window,
-        record=stages.append,
+        record=lambda _stage: None,
+        message_binding=binding,
     )
     try:
         assert window._dispatch_command(
             "review_restore", {}, pending_action="review_restore"
         )
+        result = SimpleNamespace(success=True, payload={}, command_id="review-1")
         assert window._handle_workspace_result(result) == "handled"
-        window._pending_action = "restore_project"
-        assert window._dispatch_command(
-            "restore_project", {}, pending_action="restore_project"
-        )
     finally:
         restore()
+        binding.restore()
 
-    assert stages == [
-        "review-restore-dispatch-accepted",
-        "review-restore-result-succeeded",
-        "restore-project-dispatch-accepted",
-    ]
+    assert observed == ["armed"]
 
 
-def test_consumer_data_restore_prefix_orders_cleanup_dialog_and_settlement() -> None:
+def test_review_handler_failure_before_dialog_tombstones_and_reraises() -> None:
+    gate = _gate()
+    binding = _diagnostic_binding(record=lambda _stage: None)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    observed = RuntimeError("handler before dialog")
+    window = SimpleNamespace(_pending_action="review_restore")
+
+    def dispatch(
+        _kind: str,
+        _payload: dict[str, object],
+        *,
+        pending_action: str,
+        pending_params: dict[str, object] | None = None,
+    ) -> bool:
+        del pending_action, pending_params
+        window._pending_command_id = "review-1"
+        return True
+
+    def handle(_result: object) -> object:
+        raise observed
+
+    window._dispatch_command = dispatch
+    window._handle_workspace_result = handle
+    restore = gate._instrument_recovery_boundaries(
+        window=window,
+        record=lambda _stage: None,
+        message_binding=binding,
+    )
+    try:
+        assert window._dispatch_command(
+            "review_restore", {}, pending_action="review_restore"
+        )
+        with pytest.raises(RuntimeError) as caught:
+            window._handle_workspace_result(
+                SimpleNamespace(success=True, payload={}, command_id="review-1")
+            )
+        assert caught.value is observed
+        fixed_error = binding.error
+    finally:
+        restore()
+        binding.restore()
+    assert scheduler.error is not None
+    assert str(fixed_error) == "technical-gate review dialog binding failed"
+
+
+def test_review_handler_failure_after_dialog_tombstones_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _gate()
+
+    class FakeMessageBox:
+        class StandardButton:
+            Ok = object()
+
+    fake_widgets = SimpleNamespace(QMessageBox=FakeMessageBox)
+    monkeypatch.setitem(sys.modules, "PySide6", SimpleNamespace(QtWidgets=fake_widgets))
+    monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", fake_widgets)
+    binding = _diagnostic_binding(record=lambda _stage: None)
+    scheduler = _ReviewScheduler()
+    binding.register_review(scheduler)
+    observed = RuntimeError("handler after dialog")
+    window = SimpleNamespace(_pending_action="review_restore")
+
+    def dispatch(
+        _kind: str,
+        _payload: dict[str, object],
+        *,
+        pending_action: str,
+        pending_params: dict[str, object] | None = None,
+    ) -> bool:
+        del pending_action, pending_params
+        window._pending_command_id = "review-1"
+        return True
+
+    def handle(_result: object) -> object:
+        binding._workspace_module.workspace_dialog(
+            object(), lambda: FakeMessageBox.StandardButton.Ok, dialog_instance=object()
+        )
+        raise observed
+
+    window._dispatch_command = dispatch
+    window._handle_workspace_result = handle
+    restore = gate._instrument_recovery_boundaries(
+        window=window,
+        record=lambda _stage: None,
+        message_binding=binding,
+    )
+    try:
+        assert window._dispatch_command(
+            "review_restore", {}, pending_action="review_restore"
+        )
+        with pytest.raises(RuntimeError) as caught:
+            window._handle_workspace_result(
+                SimpleNamespace(success=True, payload={}, command_id="review-1")
+            )
+        assert caught.value is observed
+        fixed_error = binding.error
+    finally:
+        restore()
+        binding.restore()
+    assert str(fixed_error) == "technical-gate review dialog binding failed"
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("PySide6") is None,
+    reason="PySide6 is unavailable",
+)
+def test_real_review_scheduler_binds_ok_and_releases_every_reference() -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+
+    gate = _gate()
+    app = QApplication.instance() or QApplication([])
+    owner = QWidget()
+    module = SimpleNamespace(
+        workspace_dialog=lambda _window, execute, *args, **kwargs: execute(
+            *args, **kwargs
+        )
+    )
+    binding = gate._WorkspaceMessageBinding(
+        workspace_module=module,
+        message_type=QMessageBox,
+        record=lambda _stage: None,
+    )
+    state = gate._schedule_review_confirmation(
+        app=app,
+        owner=owner,
+        required=True,
+        binding=binding,
+        pre_dialog_timeout_s=95.0,
+    )
+    dialog = QMessageBox(owner)
+    dialog.setStandardButtons(
+        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+    )
+    try:
+        assert state._poll_timer.isActive() is False
+        assert state._deadline_timer.isActive() is False
+        assert state._pre_dialog_timer.isActive() is True
+        binding.correlate_review_dispatch("review-1")
+        assert binding.arm_review(command_id="review-1") is True
+        binding._review_timeout()
+        assert binding.review_attempt == "armed"
+        assert state._pre_dialog_timer.isActive() is False
+        result = module.workspace_dialog(
+            owner,
+            dialog.exec,
+            dialog_instance=dialog,
+        )
+        assert result == QMessageBox.StandardButton.Ok
+        assert state.handled is True
+        assert state._timers_released is True
+        assert state.bound_message is None
+        assert state._on_visible is None
+        assert state._on_selected is None
+        assert binding._review_scheduler is None
+        assert binding.review_attempt == "consumed"
+    finally:
+        binding.restore()
+        dialog.close()
+        owner.close()
+        app.processEvents()
+
+
+def test_consumer_waits_for_review_before_restore_settlement() -> None:
     source = inspect.getsource(_gate()._run_consumer_launcher)
 
-    assert source.index('"data-restore"') < source.index(
-        '"recovery-binding-isolation-confirmed"'
-    )
-    assert source.index('"recovery-binding-isolation-confirmed"') < source.index(
-        '"restore-project-settled"'
-    )
+    assert source.index('"review dialog"') < source.index('"reviewed data restore"')
 
 
 def test_consumer_recovery_diagnostics_cover_each_modal_boundary() -> None:

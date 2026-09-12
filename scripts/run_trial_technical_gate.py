@@ -34,29 +34,24 @@ _RECOVERY_DIALOG_DIAGNOSTIC_STAGES = frozenset(
         "consumer/recovery-dialog-modal-returned",
     }
 )
-_REVIEW_DIALOG_TITLE = "Review restoration"
-_DATA_RESTORE_DIAGNOSTIC_STAGES = frozenset(
-    {
-        "consumer/recovery-binding-isolation-confirmed",
-        "consumer/review-restore-dispatch-accepted",
-        "consumer/review-restore-result-succeeded",
-        "consumer/review-dialog-scheduler-bound",
-        "consumer/review-dialog-modal-returned",
-        "consumer/restore-project-dispatch-accepted",
-        "consumer/restore-project-settled",
-    }
-)
-_DIALOG_DIAGNOSTIC_STAGES = (
-    _RECOVERY_DIALOG_DIAGNOSTIC_STAGES | _DATA_RESTORE_DIAGNOSTIC_STAGES
-)
+_REVIEW_PRE_DIALOG_TIMEOUT_S = 95.0
 
 
 class _ScheduledMessageClick:
     """Retain one bounded, Qt-owned message-box interaction."""
 
-    def __init__(self, *, poll_timer: Any, deadline_timer: Any) -> None:
+    def __init__(
+        self,
+        *,
+        poll_timer: Any,
+        deadline_timer: Any,
+        pre_dialog_timer: Any | None = None,
+        review: bool = False,
+    ) -> None:
         self._poll_timer = poll_timer
         self._deadline_timer = deadline_timer
+        self._pre_dialog_timer = pre_dialog_timer
+        self.review = review
         self.bound_message: Any | None = None
         self.diagnostic_message: Any | None = None
         self._diagnostic_binding: _WorkspaceMessageBinding | None = None
@@ -68,6 +63,32 @@ class _ScheduledMessageClick:
         self.diagnostic_selection_succeeded = False
         self.error: BaseException | None = None
         self.handled = False
+
+    def start_pre_dialog(
+        self, timeout_s: float, callback: Callable[[], None]
+    ) -> None:
+        """Start only the bounded wait for the asynchronous Review result."""
+        timer = self._pre_dialog_timer
+        if timer is None:
+            callback()
+            return
+        timeout_ms = max(1, int(timeout_s * 1000))
+        timer.timeout.connect(callback)
+        timer.start(timeout_ms)
+
+    def start_interaction(self) -> None:
+        """Start the visibility and selection timers after Review binding."""
+        self._poll_timer.start()
+        self._deadline_timer.start()
+
+    def stop_pre_dialog(self) -> None:
+        """Stop the asynchronous-result wait without releasing interaction timers."""
+        timer = self._pre_dialog_timer
+        if timer is not None:
+            try:
+                timer.stop()
+            except BaseException:
+                pass
 
     def bind(self, message: Any) -> None:
         """Retain the concrete message passed into the workspace dialog boundary."""
@@ -126,7 +147,13 @@ class _ScheduledMessageClick:
 
     def stop(self) -> None:
         """Stop both owner-bound timers once this interaction is settled."""
-        for timer in (self._poll_timer, self._deadline_timer):
+        for timer in (
+            self._poll_timer,
+            self._deadline_timer,
+            self._pre_dialog_timer,
+        ):
+            if timer is None:
+                continue
             try:
                 stop = getattr(timer, "stop", None)
                 if callable(stop):
@@ -159,6 +186,7 @@ class _WorkspaceMessageBinding:
     """
 
     _FIXED_ERROR = "technical-gate recovery dialog binding failed"
+    _REVIEW_FIXED_ERROR = "technical-gate review dialog binding failed"
     _MISSING = object()
 
     def __init__(
@@ -181,6 +209,13 @@ class _WorkspaceMessageBinding:
         self._diagnostic_scheduler: Any | None = None
         self._recovery_modal_active = False
         self._binding_error: GateError | None = None
+        self._review_scheduler: _ScheduledMessageClick | Any | None = None
+        self._review_expected_instance: Any = self._MISSING
+        self._review_command_id: Any = self._MISSING
+        self._review_attempt = "unarmed"
+        self._review_modal_active = False
+        self._review_error: GateError | None = None
+        self._review_message: Any | None = None
 
         def workspace_dialog(
             window: Any,
@@ -189,12 +224,19 @@ class _WorkspaceMessageBinding:
             dialog_instance: Any | None = None,
             **kwargs: Any,
         ) -> Any:
+            if self._review_attempt != "unarmed":
+                return self._review_dialog(
+                    window,
+                    execute,
+                    *args,
+                    dialog_instance=dialog_instance,
+                    **kwargs,
+                )
             diagnostic_attempt = self._recovery_attempt == "armed"
             if not diagnostic_attempt and not self._recovery_modal_active:
                 # Keep the ordinary title-bound helper for non-Recovery
                 # dialogs. The armed branch below intentionally never reads
                 # callable owners or searches application widgets.
-                review_scheduled = self._scheduled.get(_REVIEW_DIALOG_TITLE)
                 message = (
                     dialog_instance
                     if dialog_instance is not None
@@ -205,20 +247,7 @@ class _WorkspaceMessageBinding:
                     scheduled = self._scheduled.get(title)
                     if scheduled is not None:
                         scheduled.bind(message)
-                        if scheduled is review_scheduled:
-                            self._record_diagnostic_stage(
-                                "consumer/review-dialog-scheduler-bound"
-                            )
-                result = self._original(window, execute, *args, **kwargs)
-                if (
-                    review_scheduled is not None
-                    and bool(getattr(review_scheduled, "handled", False))
-                    and getattr(review_scheduled, "error", None) is None
-                ):
-                    self._record_diagnostic_stage(
-                        "consumer/review-dialog-modal-returned"
-                    )
-                return result
+                return self._original(window, execute, *args, **kwargs)
             if self._recovery_modal_active:
                 self._terminal_failure()
                 return None
@@ -271,6 +300,202 @@ class _WorkspaceMessageBinding:
         """Register the one pending interaction for a message title."""
         self._scheduled[title] = scheduled
 
+    def register_review(
+        self,
+        scheduled: Any,
+        *,
+        dialog_instance: Any = _MISSING,
+        pre_dialog_timeout_s: float = _REVIEW_PRE_DIALOG_TIMEOUT_S,
+    ) -> None:
+        """Reserve one dormant scheduler for the Review confirmation dialog."""
+        if self._review_scheduler is not None or self._review_attempt != "unarmed":
+            self._review_terminal_failure(scheduled)
+            raise self._review_error or GateError(self._REVIEW_FIXED_ERROR)
+        self._review_scheduler = scheduled
+        self._review_expected_instance = dialog_instance
+        self._review_attempt = "pending"
+        start_pre_dialog = getattr(scheduled, "start_pre_dialog", None)
+        if not callable(start_pre_dialog):
+            self._review_terminal_failure(scheduled)
+            raise self._review_error or GateError(self._REVIEW_FIXED_ERROR)
+        try:
+            start_pre_dialog(pre_dialog_timeout_s, lambda: self._review_timeout())
+        except BaseException:
+            self._review_terminal_failure(scheduled)
+            raise self._review_error or GateError(self._REVIEW_FIXED_ERROR)
+
+    def correlate_review_dispatch(self, command_id: Any) -> None:
+        """Associate the dormant Review scheduler with one accepted command."""
+        if (
+            self._review_attempt != "pending"
+            or self._review_scheduler is None
+            or command_id is self._MISSING
+            or command_id is None
+            or (
+                self._review_command_id is not self._MISSING
+                and command_id != self._review_command_id
+            )
+        ):
+            self._review_terminal_failure()
+            return
+        self._review_command_id = command_id
+
+    def arm_review(self, *, command_id: Any = _MISSING) -> bool:
+        """Arm Review only for its correlated successful command result."""
+        if self._review_attempt != "pending" or self._review_scheduler is None:
+            return False
+        if (
+            self._review_command_id is self._MISSING
+            or command_id is self._MISSING
+            or command_id != self._review_command_id
+        ):
+            return False
+        self._review_attempt = "armed"
+        self._review_command_id = self._MISSING
+        stop_pre_dialog = getattr(self._review_scheduler, "stop_pre_dialog", None)
+        if callable(stop_pre_dialog):
+            stop_pre_dialog()
+        return True
+
+    def fail_review(self) -> GateError:
+        """Leave a terminal tombstone that rejects late Review dialogs."""
+        return self._review_terminal_failure()
+
+    @property
+    def review_attempt(self) -> str:
+        """Return the dedicated Review two-phase state."""
+        return self._review_attempt
+
+    def _review_dialog(
+        self,
+        window: Any,
+        execute: Any,
+        *args: Any,
+        dialog_instance: Any | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Run the dedicated Review modal only for its exact QMessageBox."""
+        if self._review_modal_active:
+            self._review_terminal_failure()
+            return None
+        scheduler = self._review_scheduler
+        if self._review_attempt != "armed" or scheduler is None:
+            self._review_terminal_failure()
+            return None
+        self._review_modal_active = True
+        original_boundary_error: BaseException | None = None
+        try:
+            if dialog_instance is None or not isinstance(
+                dialog_instance, self._message_type
+            ):
+                self._review_terminal_failure(scheduler)
+                return None
+            if (
+                self._review_expected_instance is not self._MISSING
+                and dialog_instance is not self._review_expected_instance
+            ):
+                self._review_terminal_failure(scheduler)
+                return None
+            scheduler.bind(dialog_instance)
+            self._review_message = dialog_instance
+            start_interaction = getattr(scheduler, "start_interaction", None)
+            if not callable(start_interaction):
+                self._review_terminal_failure(scheduler)
+                return None
+            start_interaction()
+            try:
+                result = self._original(window, execute, *args, **kwargs)
+            except BaseException as exc:
+                self._review_terminal_failure(scheduler)
+                original_boundary_error = exc
+                raise
+            if scheduler.error is not None or not scheduler.handled:
+                self._review_terminal_failure(scheduler)
+                return None
+            from PySide6.QtWidgets import QMessageBox
+
+            if result != QMessageBox.StandardButton.Ok:
+                self._review_terminal_failure(scheduler)
+                return None
+            self._review_attempt = "consumed"
+            return result
+        except BaseException:
+            if original_boundary_error is not None:
+                raise
+            self._review_terminal_failure(scheduler)
+            return None
+        finally:
+            self._review_modal_active = False
+            self._release_review()
+
+    def _review_timeout(self) -> None:
+        """Tombstone a Review whose result or dialog took too long."""
+        if self._review_attempt == "pending":
+            self._review_terminal_failure()
+
+    def _review_terminal_failure(self, scheduler: Any | None = None) -> GateError:
+        """Fail closed and retain a tombstone for every late Review boundary."""
+        if self._review_error is None:
+            self._review_error = GateError(self._REVIEW_FIXED_ERROR)
+        self._review_attempt = "tombstone"
+        candidates = [scheduler, self._review_scheduler]
+        seen: set[int] = set()
+        for candidate in candidates:
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            try:
+                candidate.error = self._review_error
+            except BaseException:
+                pass
+            try:
+                stop = getattr(candidate, "stop", None)
+                if callable(stop):
+                    stop()
+            except BaseException:
+                pass
+            try:
+                clear_binding = getattr(candidate, "clear_binding", None)
+                if callable(clear_binding):
+                    clear_binding()
+            except BaseException:
+                pass
+        message = self._review_message
+        if message is not None:
+            for method_name in ("reject", "close"):
+                try:
+                    method = getattr(message, method_name, None)
+                except BaseException:
+                    continue
+                if not callable(method):
+                    continue
+                try:
+                    method()
+                except BaseException:
+                    continue
+                break
+        self._review_scheduler = None
+        self._review_expected_instance = self._MISSING
+        self._review_command_id = self._MISSING
+        self._review_message = None
+        return self._review_error
+
+    def _release_review(self) -> None:
+        """Release all Qt and callback references after Review settles."""
+        scheduler = self._review_scheduler
+        try:
+            if scheduler is not None:
+                clear_binding = getattr(scheduler, "clear_binding", None)
+                if callable(clear_binding):
+                    clear_binding()
+        except BaseException:
+            pass
+        finally:
+            self._review_scheduler = None
+            self._review_expected_instance = self._MISSING
+            self._review_command_id = self._MISSING
+            self._review_message = None
+
     def release_scheduled(self, scheduled: Any) -> None:
         """Remove and clean up one generic scheduler after it settles."""
         self._scheduled = {
@@ -298,12 +523,12 @@ class _WorkspaceMessageBinding:
     @property
     def error(self) -> GateError | None:
         """Return the fixed error captured for an invalid binding state."""
-        return self._binding_error
+        return self._binding_error or self._review_error
 
     @property
     def binding_error(self) -> GateError | None:
         """Alias the fixed binding error for consumer wait predicates."""
-        return self._binding_error
+        return self._binding_error or self._review_error
 
     @property
     def recovery_armed(self) -> bool:
@@ -438,7 +663,7 @@ class _WorkspaceMessageBinding:
 
     def _record_diagnostic_stage(self, stage: str) -> None:
         """Record one fixed diagnostic stage and fail closed on recorder errors."""
-        if stage not in _DIALOG_DIAGNOSTIC_STAGES:
+        if stage not in _RECOVERY_DIALOG_DIAGNOSTIC_STAGES:
             raise GateError("technical-gate diagnostic stage is invalid")
         if stage in self._emitted_stages:
             return
@@ -455,6 +680,8 @@ class _WorkspaceMessageBinding:
         scheduled_values = [*self._scheduled.values()]
         if self._recovery_scheduler is not None:
             scheduled_values.append(self._recovery_scheduler)
+        if self._review_scheduler is not None:
+            scheduled_values.append(self._review_scheduler)
         seen: set[int] = set()
         for scheduled in scheduled_values:
             if id(scheduled) in seen:
@@ -474,6 +701,13 @@ class _WorkspaceMessageBinding:
         self._diagnostic_scheduler = None
         self._recovery_modal_active = False
         self._binding_error = None
+        self._review_scheduler = None
+        self._review_expected_instance = self._MISSING
+        self._review_command_id = self._MISSING
+        self._review_attempt = "unarmed"
+        self._review_modal_active = False
+        self._review_error = None
+        self._review_message = None
 
 
 def _install_workspace_message_binding(
@@ -562,13 +796,6 @@ _CONSUMER_GATE_STAGES = frozenset(
         "recovery-dialog-poll-entered",
         "recovery-dialog-button-resolved",
         "recovery-dialog-modal-returned",
-        "recovery-binding-isolation-confirmed",
-        "review-restore-dispatch-accepted",
-        "review-restore-result-succeeded",
-        "review-dialog-scheduler-bound",
-        "review-dialog-modal-returned",
-        "restore-project-dispatch-accepted",
-        "restore-project-settled",
     }
 )
 _ALLOWED_GATE_STAGE_PAIRS = frozenset(
@@ -1428,6 +1655,8 @@ def _schedule_message_box_button(
     on_selected: Callable[[], None] | None = None,
     on_diagnostic_poll: Callable[[], None] | None = None,
     on_diagnostic_button: Callable[[], None] | None = None,
+    review: bool = False,
+    pre_dialog_timeout_s: float = _REVIEW_PRE_DIALOG_TIMEOUT_S,
 ) -> _ScheduledMessageClick:
     """Click a title-bound message button without racing another modal.
 
@@ -1436,6 +1665,23 @@ def _schedule_message_box_button(
     to close reliably.  The timers are owned by the main window and bounded so
     a missing or malformed dialog cannot poll forever.
     """
+    if review:
+        if binding is not None and message_binding is not None:
+            if binding is not message_binding:
+                raise GateError("technical-gate message binding is ambiguous")
+        review_binding = message_binding or binding
+        if review_binding is None:
+            raise GateError("technical-gate review dialog binding failed")
+        return _schedule_review_confirmation(
+            app=app,
+            owner=owner,
+            required=required,
+            timeout_s=timeout_s,
+            pre_dialog_timeout_s=pre_dialog_timeout_s,
+            binding=review_binding,
+            on_visible=on_visible,
+            on_selected=on_selected,
+        )
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QMessageBox
 
@@ -1562,6 +1808,96 @@ def _schedule_message_box_button(
     return state
 
 
+def _schedule_review_confirmation(
+    *,
+    app: Any,
+    owner: Any,
+    required: bool,
+    timeout_s: float = 15.0,
+    pre_dialog_timeout_s: float = _REVIEW_PRE_DIALOG_TIMEOUT_S,
+    binding: _WorkspaceMessageBinding,
+    on_visible: Callable[[], None] | None = None,
+    on_selected: Callable[[], None] | None = None,
+) -> _ScheduledMessageClick:
+    """Reserve a dormant Review scheduler and bind only an explicit QMessageBox."""
+    del app, required
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+
+    poll_timer = QTimer(owner)
+    poll_timer.setInterval(10)
+    deadline_timer = QTimer(owner)
+    deadline_timer.setSingleShot(True)
+    deadline_timer.setInterval(max(1, int(timeout_s * 1000)))
+    pre_dialog_timer = QTimer(owner)
+    pre_dialog_timer.setSingleShot(True)
+    state = _ScheduledMessageClick(
+        poll_timer=poll_timer,
+        deadline_timer=deadline_timer,
+        pre_dialog_timer=pre_dialog_timer,
+        review=True,
+    )
+    state._on_visible = on_visible
+    state._on_selected = on_selected
+
+    def fail(_error: BaseException | None = None) -> None:
+        if state.error is None:
+            state.error = GateError(
+                _WorkspaceMessageBinding._REVIEW_FIXED_ERROR
+            )
+        try:
+            binding.fail_review()
+        finally:
+            state.stop()
+
+    def expire() -> None:
+        if not state.handled:
+            fail()
+
+    def poll() -> None:
+        if state.handled or state.error is not None:
+            return
+        message = state.bound_message
+        if message is None:
+            fail()
+            return
+        try:
+            if state._on_visible is not None:
+                state._on_visible()
+            button = message.button(QMessageBox.StandardButton.Ok)
+            if button is None:
+                fail()
+                return
+            state.handled = True
+            state.stop()
+            button.click()
+            if state._on_selected is not None:
+                state._on_selected()
+        except BaseException:
+            fail()
+
+    poll_timer.timeout.connect(poll)
+    deadline_timer.timeout.connect(expire)
+
+    def owner_deleted(*_args: object) -> None:
+        if not state.handled and state.error is None:
+            fail()
+
+    destroyed = getattr(owner, "destroyed", None)
+    connect_destroyed = getattr(destroyed, "connect", None)
+    if callable(connect_destroyed):
+        connect_destroyed(owner_deleted)
+    try:
+        binding.register_review(
+            state,
+            pre_dialog_timeout_s=pre_dialog_timeout_s,
+        )
+    except BaseException:
+        state.stop()
+        raise
+    return state
+
+
 def _instrument_recovery_boundaries(
     *,
     window: Any,
@@ -1585,23 +1921,37 @@ def _instrument_recovery_boundaries(
         traces_recovery = kind == "list_recoveries"
         if traces_recovery:
             record("recovery-list-dispatch-requested")
-        accepted = original_dispatch(
-            kind,
-            payload,
-            pending_action=pending_action,
-            pending_params=pending_params,
-        )
+        try:
+            accepted = original_dispatch(
+                kind,
+                payload,
+                pending_action=pending_action,
+                pending_params=pending_params,
+            )
+        except BaseException:
+            if kind == "review_restore" and message_binding is not None:
+                message_binding.fail_review()
+            raise
         if traces_recovery and accepted:
             record("recovery-list-dispatch-accepted")
-        if accepted and kind == "review_restore":
-            record("review-restore-dispatch-accepted")
-        if accepted and kind == "restore_project":
-            record("restore-project-dispatch-accepted")
+        if accepted and kind == "review_restore" and message_binding is not None:
+            message_binding.correlate_review_dispatch(
+                getattr(window, "_pending_command_id", message_binding._MISSING)
+            )
+        elif kind == "review_restore" and message_binding is not None:
+            message_binding.fail_review()
         return accepted
 
     def handle_workspace_result(result: Any) -> Any:
-        if window._pending_action == "review_restore" and result.success:
-            record("review-restore-result-succeeded")
+        review_armed = False
+        if window._pending_action == "review_restore" and message_binding is not None:
+            command_id = getattr(result, "command_id", message_binding._MISSING)
+            if result.success:
+                review_armed = message_binding.arm_review(command_id=command_id)
+                if not review_armed:
+                    message_binding.fail_review()
+            else:
+                message_binding.fail_review()
         if window._pending_action == "list_recoveries":
             record("recovery-list-result-received")
             if result.success:
@@ -1612,7 +1962,12 @@ def _instrument_recovery_boundaries(
                     record("recovery-candidates-received")
                     if message_binding is not None:
                         message_binding.arm_recovery()
-        return original_handle_workspace_result(result)
+        try:
+            return original_handle_workspace_result(result)
+        except BaseException:
+            if review_armed and message_binding is not None:
+                message_binding.fail_review()
+            raise
 
     window._dispatch_command = dispatch
     window._handle_workspace_result = handle_workspace_result
@@ -1746,18 +2101,25 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
             _record_gate_stage(work_root, "consumer", "data-restore")
             if not message_binding.recovery_binding_isolated:
                 raise GateError("technical-gate recovery dialog isolation failed")
-            _record_gate_stage(
-                work_root, "consumer", "recovery-binding-isolation-confirmed"
-            )
-            review_message = _schedule_message_box_button(
+            review_message = _schedule_review_confirmation(
                 app=app,
                 owner=window,
-                label="OK",
-                title="Review restoration",
                 required=True,
                 binding=message_binding,
             )
             window.restore_project_action.trigger()
+            try:
+                _wait(
+                    app,
+                    lambda: review_message.handled
+                    or review_message.error is not None,
+                    "review dialog",
+                    timeout_s=_REVIEW_PRE_DIALOG_TIMEOUT_S,
+                )
+            except GateError:
+                message_binding.fail_review()
+                raise
+            review_message.raise_if_failed()
             _wait(
                 app,
                 lambda: (
@@ -1768,8 +2130,6 @@ def _run_consumer_launcher(*, checkout: Path, project: Path, work_root: Path) ->
                 ),
                 "reviewed data restore",
             )
-            review_message.raise_if_failed()
-            _record_gate_stage(work_root, "consumer", "restore-project-settled")
             _record_gate_stage(work_root, "consumer", "recovery-consumption")
             window.recoveries_action.trigger()
             _wait(
