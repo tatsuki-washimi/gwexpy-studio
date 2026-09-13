@@ -143,3 +143,31 @@ def test_residency_requires_the_object_captured_at_io_read_settled() -> None:
     window._workspace_status["resident_object_ids"] = ["expected"]
     observation.observe_window(window)
     assert observation.observations["object_resident"] is True
+
+
+def test_read_result_captures_target_before_preview_settlement() -> None:
+    observation = _observation()
+    observation.record_stage("io_read")
+    observation.observe_result("signal_read_io", True)
+    window = SimpleNamespace(
+        bridge=SimpleNamespace(
+            state="idle",
+            worker_thread=SimpleNamespace(isRunning=lambda: False),
+        ),
+        _pending_action=None,
+        _command_reserved=False,
+        _modal_active=False,
+        project=SimpleNamespace(objects=[SimpleNamespace(object_id="read-target")]),
+        _workspace_status={
+            "resident_object_ids": ["read-target"],
+            "needs_restore": False,
+        },
+        open_data_panel=None,
+    )
+
+    observation.observe_window(window)
+
+    assert observation.observations["read_result_success"] is True
+    assert observation.observations["object_present"] is True
+    assert observation.observations["object_resident"] is True
+    assert observation.observations["preview_completed"] is False

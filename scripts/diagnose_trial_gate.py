@@ -448,9 +448,19 @@ class DiagnosticObservation:
             project = getattr(window, "project", None)
             status = getattr(window, "_workspace_status", {})
             objects = getattr(project, "objects", ())
-            if self.stage == "io_read_settled" and objects:
-                candidate = getattr(objects[-1], "object_id", None)
-                if isinstance(candidate, str):
+            # Freeze the target as soon as the matching read result has
+            # produced exactly one project object.  A read can fail before
+            # the formal ``io_read_settled`` marker, but the object state is
+            # still useful evidence for separating a missing preview from a
+            # missing read object.  Never replace this identity at a later
+            # stage; residency must always refer to the original read object.
+            if self._expected_object_id is None and len(objects) == 1:
+                candidate = getattr(objects[0], "object_id", None)
+                if self.observations["read_result_success"] is True and isinstance(
+                    candidate, str
+                ):
+                    self._expected_object_id = candidate
+                elif self.stage == "io_read_settled" and isinstance(candidate, str):
                     self._expected_object_id = candidate
             object_present = isinstance(self._expected_object_id, str) and any(
                 getattr(item, "object_id", None) == self._expected_object_id
