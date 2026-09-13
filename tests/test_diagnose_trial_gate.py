@@ -11,6 +11,7 @@ from scripts.diagnose_trial_gate import (
     OBSERVATION_KEYS,
     DiagnosticObservation,
     DiagnosticSchemaError,
+    _result_is_current,
     classify_process_outcome,
     parse_snapshot,
 )
@@ -103,6 +104,22 @@ def test_wait_expiry_is_terminal_failed_before_parent_process_exit() -> None:
     assert observation.outcome == "failed"
     assert observation.failure_category == "wait_expired"
     assert observation.stage == "io_read"
+
+
+def test_failed_restore_result_stays_distinct_from_later_wait_expiry() -> None:
+    observation = _observation()
+    observation.observe_result("restore_project", False)
+    observation.record_wait("restore", False)
+
+    assert observation.observations["restore_result_observed"] is True
+    assert observation.observations["restore_result_success"] is False
+    assert observation.failure_category == "result_failure"
+
+
+def test_stale_bridge_result_is_not_current() -> None:
+    assert _result_is_current("current", "stale") is False
+    assert _result_is_current("current", "current") is True
+    assert _result_is_current(None, "unmatched") is True
 
 
 def test_residency_requires_the_object_captured_at_io_read_settled() -> None:

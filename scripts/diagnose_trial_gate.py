@@ -94,7 +94,9 @@ _OBSERVATION_FIELDS = (
     "click_invoked",
     "click_signal_observed",
     "read_dispatch_accepted",
+    "read_dispatch_returned",
     "read_result_success",
+    "read_result_observed",
     "object_present",
     "object_resident",
     "needs_restore",
@@ -110,7 +112,9 @@ _OBSERVATION_FIELDS = (
     "review_modal_returned_ok",
     "restore_dispatch_requested",
     "restore_dispatch_accepted",
+    "restore_dispatch_returned",
     "restore_result_success",
+    "restore_result_observed",
     "autopreview_result",
 )
 _PENDING_ACTIONS = frozenset(
@@ -148,7 +152,9 @@ def _empty_observations() -> dict[str, object]:
         "click_invoked": False,
         "click_signal_observed": False,
         "read_dispatch_accepted": False,
+        "read_dispatch_returned": False,
         "read_result_success": False,
+        "read_result_observed": False,
         "object_present": False,
         "object_resident": False,
         "needs_restore": False,
@@ -164,7 +170,9 @@ def _empty_observations() -> dict[str, object]:
         "review_modal_returned_ok": False,
         "restore_dispatch_requested": False,
         "restore_dispatch_accepted": False,
+        "restore_dispatch_returned": False,
         "restore_result_success": False,
+        "restore_result_observed": False,
         "autopreview_result": "unknown",
     }
 
@@ -307,7 +315,8 @@ class DiagnosticObservation:
         """Record a bounded wait and classify an expired predicate without text."""
         del label
         if not success:
-            self.failure_category = "wait_expired"
+            if self.failure_category == "none":
+                self.failure_category = "wait_expired"
             self.outcome = "failed"
         self.write()
 
@@ -349,11 +358,13 @@ class DiagnosticObservation:
     def observe_dispatch(self, kind: str, accepted: bool) -> None:
         """Record only the fixed read and restore dispatch boundaries."""
         if kind == "read_io":
+            self.observations["read_dispatch_returned"] = True
             self.observations["read_dispatch_accepted"] = accepted
             if not accepted and self.failure_category == "none":
                 self.failure_category = "dispatch_rejected"
         elif kind == "restore_project":
             self.observations["restore_dispatch_requested"] = True
+            self.observations["restore_dispatch_returned"] = True
             self.observations["restore_dispatch_accepted"] = accepted
             if not accepted and self.failure_category == "none":
                 self.failure_category = "dispatch_rejected"
@@ -368,10 +379,12 @@ class DiagnosticObservation:
     def observe_result(self, action: str | None, success: bool) -> None:
         """Record fixed result outcomes without retaining payloads or IDs."""
         if action == "signal_read_io":
+            self.observations["read_result_observed"] = True
             self.observations["read_result_success"] = success
             if not success and self.failure_category == "none":
                 self.failure_category = "result_failure"
         elif action == "restore_project":
+            self.observations["restore_result_observed"] = True
             self.observations["restore_result_success"] = success
             if not success and self.failure_category == "none":
                 self.failure_category = "result_failure"
@@ -435,11 +448,14 @@ class DiagnosticObservation:
             project = getattr(window, "project", None)
             status = getattr(window, "_workspace_status", {})
             objects = getattr(project, "objects", ())
-            object_present = bool(objects)
             if self.stage == "io_read_settled" and objects:
                 candidate = getattr(objects[-1], "object_id", None)
                 if isinstance(candidate, str):
                     self._expected_object_id = candidate
+            object_present = isinstance(self._expected_object_id, str) and any(
+                getattr(item, "object_id", None) == self._expected_object_id
+                for item in objects
+            )
             resident_ids = (
                 status.get("resident_object_ids", ())
                 if isinstance(status, Mapping)
@@ -505,6 +521,13 @@ def classify_process_outcome(
     if returncode is None or returncode != 0:
         return "process_exit", "process_exit"
     return "passed", "none"
+
+
+def _result_is_current(
+    pending_command_id: object, result_command_id: object
+) -> bool:
+    """Match the production handler's stale-result acceptance condition."""
+    return pending_command_id is None or result_command_id == pending_command_id
 
 
 def _sha256(path: Path) -> str:
@@ -633,7 +656,10 @@ def _install_in_memory_observers(
     def result(self: Any, bridge_result: Any) -> Any:
         action = getattr(self, "_pending_action", None)
         success = bool(getattr(bridge_result, "success", False))
-        observation.observe_result(action, success)
+        pending_command_id = getattr(self, "_pending_command_id", None)
+        result_command_id = getattr(bridge_result, "command_id", None)
+        if _result_is_current(pending_command_id, result_command_id):
+            observation.observe_result(action, success)
         result_value = observation.forward_callback(
             original_result, self, bridge_result
         )
