@@ -489,8 +489,11 @@ class DiagnosticObservation:
         object_count: int,
         resident_nonempty: bool,
         preview_seen: bool,
+        needs_restore: str = "unknown",
     ) -> None:
         """Record the gate completion predicate conjuncts at a wait boundary."""
+        if needs_restore not in {"unknown", "true", "false"}:
+            needs_restore = "unknown"
         self.record_trace(
             "predicate_vector",
             {
@@ -498,6 +501,7 @@ class DiagnosticObservation:
                 "object_count": int(object_count),
                 "resident_nonempty": bool(resident_nonempty),
                 "preview_seen": bool(preview_seen),
+                "needs_restore": needs_restore,
             },
         )
 
@@ -893,6 +897,11 @@ def _install_in_memory_observers(
                         if isinstance(status, Mapping)
                         else ()
                     )
+                    raw_restore = (
+                        status.get("needs_restore")
+                        if isinstance(status, Mapping)
+                        else None
+                    )
                     observation.observe_predicate_vector(
                         bridge_idle=(state == "idle"),
                         object_count=(
@@ -902,6 +911,9 @@ def _install_in_memory_observers(
                         preview_seen=bool(
                             observation.observations["preview_completed"]
                         ),
+                        needs_restore="true"
+                        if raw_restore is True
+                        else ("false" if raw_restore is False else "unknown"),
                     )
                 except BaseException:
                     pass
