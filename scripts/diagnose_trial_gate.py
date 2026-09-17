@@ -835,8 +835,25 @@ def _install_in_memory_observers(
     original_select = window_type._select_object_and_request_preview
     original_show_error = window_type._show_error
     client_module = importlib.import_module("gwexpy_studio.worker.client")
+    shm_module = importlib.import_module("gwexpy_studio.worker.shm")
+    preview_module = importlib.import_module(
+        "gwexpy_studio.application.signal_preview"
+    )
     original_descriptor_error = client_module._descriptor_error
-    original_attach = client_module.attach_block
+    # The preview path attaches via signal_preview.attach_block, bound at
+    # import from the shm module (client.attach_block is a separate
+    # reference).  Patch every live reference to the same wrapper.
+    original_attach_targets = [
+        (module, "attach_block")
+        for module in (shm_module, client_module, preview_module)
+        if getattr(module, "attach_block", None) is not None
+    ]
+    original_attach_fns = [
+        getattr(module, "attach_block") for module, _ in original_attach_targets
+    ]
+    # All live references point at the same underlying function; keep one
+    # direct handle so the wrapper never calls itself.
+    real_attach = shm_module.attach_block
     original_fetch_array = client_module.WorkerClient.fetch_array
     original_preview = plot_type.set_preview
     original_qtest = qt_test_module.QTest
@@ -971,7 +988,7 @@ def _install_in_memory_observers(
             # SharedMemoryError is the application's normal error-reporting
             # path here; call through directly so it is never recorded as an
             # observer callback failure.
-            return original_attach(descriptor, **kwargs)
+            return real_attach(descriptor, **kwargs)
         except BaseException as error:
             actual: object = "unprobed"
             try:
@@ -1041,7 +1058,8 @@ def _install_in_memory_observers(
     window_type._select_object_and_request_preview = select
     window_type._show_error = show_error
     client_module._descriptor_error = descriptor_error
-    client_module.attach_block = attach_block
+    for module, _ in original_attach_targets:
+        setattr(module, "attach_block", attach_block)
     client_module.WorkerClient.fetch_array = fetch_array
     plot_type.set_preview = preview
     qt_test_module.QTest = _QTestObserver(
@@ -1068,7 +1086,10 @@ def _install_in_memory_observers(
         window_type._select_object_and_request_preview = original_select
         window_type._show_error = original_show_error
         client_module._descriptor_error = original_descriptor_error
-        client_module.attach_block = original_attach
+        for (module, _), original in zip(
+            original_attach_targets, original_attach_fns
+        ):
+            setattr(module, "attach_block", original)
         client_module.WorkerClient.fetch_array = original_fetch_array
         plot_type.set_preview = original_preview
         qt_test_module.QTest = original_qtest
