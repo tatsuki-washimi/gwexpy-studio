@@ -1185,3 +1185,49 @@ def test_staging_delta_rejects_an_unapproved_generated_file() -> None:
             staging_manifest=staging_manifest,
             generated_files=generated,
         )
+
+
+def test_descriptor_path_resolves_a_retained_directory(
+    tmp_path: Path,
+) -> None:
+    """A retained output-parent fd resolves without trusting its old pathname."""
+    import os
+
+    builder = _builder()
+    parent = tmp_path / "output-parent"
+    parent.mkdir()
+    descriptor = os.open(parent, os.O_RDONLY)
+    try:
+        assert builder._descriptor_path(descriptor, "output directory parent") == (
+            parent.resolve()
+        )
+    finally:
+        os.close(descriptor)
+
+
+def test_descriptor_path_fails_closed_without_proc_or_getpath(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without /proc and without F_GETPATH, resolution fails closed.
+
+    This Linux-mock simulates /proc absence; it does not execute macOS
+    kernel behavior. The macOS-native F_GETPATH path is verified by a
+    separate native run, not by this test.
+    """
+    import os
+
+    builder = _builder()
+    parent = tmp_path / "output-parent"
+    parent.mkdir()
+
+    def without_proc(path: str | os.PathLike[str]) -> str:
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "readlink", without_proc)
+    monkeypatch.setattr("fcntl.F_GETPATH", None, raising=False)
+    descriptor = os.open(parent, os.O_RDONLY)
+    try:
+        with pytest.raises(builder.TrialBuildError, match="cannot resolve"):
+            builder._descriptor_path(descriptor, "output directory parent")
+    finally:
+        os.close(descriptor)
