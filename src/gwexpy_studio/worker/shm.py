@@ -196,8 +196,13 @@ def attach_block(
        exactly ``nbytes`` (``prod(shape) * dtype.itemsize == nbytes``). If a
        JSON round trip across the IPC boundary desynchronizes these fields,
        this is caught before any shared-memory block is even opened.
-    2. **Descriptor vs. reality**: the declared ``nbytes`` must match the
-       actual shared-memory block size once opened (checked below).
+    2. **Descriptor vs. reality**: the actual shared-memory block must hold
+       at least the declared ``nbytes`` (checked below). Platforms may back
+       a small block with a larger page-rounded segment (observed: a 2048
+       byte preview block reported as 16384 bytes on macOS ARM64); the
+       declared ``shape``/``dtype`` view always fits inside. A block
+       *smaller* than declared would truncate the view and stays a hard
+       failure.
 
     Without check 1, a descriptor with an ``nbytes`` larger than what
     ``shape``/``dtype`` require would silently succeed and copy out only the
@@ -238,11 +243,11 @@ def attach_block(
             code="shm_not_found",
         ) from exc
 
-    if shm.size != descriptor.nbytes:
+    if shm.size < descriptor.nbytes:
         shm.close()
         raise SharedMemoryError(
             "Shared memory size mismatch: descriptor declares "
-            f"{descriptor.nbytes} bytes, actual block is {shm.size} bytes",
+            f"{descriptor.nbytes} bytes, actual block is only {shm.size} bytes",
             code="shm_invalid_descriptor",
         )
 

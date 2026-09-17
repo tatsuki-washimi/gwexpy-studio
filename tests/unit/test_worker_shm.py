@@ -358,15 +358,73 @@ def test_create_block_defaults_unit_to_empty_string_without_a_unit_attribute() -
 
 
 @pytest.mark.contract("C-SHM-011")
-def test_attach_block_rejects_an_actual_block_size_mismatch() -> None:
-    """Attachment validates the descriptor's nbytes against a real block."""
-    block = shared_memory.SharedMemory(create=True, size=16)
+def test_attach_block_rejects_a_truncated_actual_block() -> None:
+    """A block smaller than the declared nbytes would truncate the view."""
+    block = shared_memory.SharedMemory(create=True, size=8)
+    # The rejection below is only meaningful when the platform reports the
+    # block as actually smaller than declared (page rounding must not have
+    # inflated it to sufficient capacity).
+    assert block.size < 16, f"fixture requires a truncated block, got {block.size}"
     try:
         descriptor = SharedMemoryDescriptor(
             name=block.name,
             dtype="uint8",
-            shape=(8,),
-            nbytes=8,
+            shape=(16,),
+            nbytes=16,
+            unit="",
+        )
+        _expect_shm_error(
+            _ATTACH_OWNER,
+            lambda: attach_block(descriptor),
+            code="shm_invalid_descriptor",
+        )
+    finally:
+        _close_and_unlink(block)
+
+
+@pytest.mark.contract("C-SHM-021")
+def test_attach_block_accepts_a_page_rounded_actual_block() -> None:
+    """Attachment tolerates an actual block larger than declared nbytes.
+
+    macOS ARM64 backs a 2048-byte preview block with a 16384-byte segment;
+    the declared shape/dtype view still fits exactly, so attachment must
+    succeed and copy out the declared values (R3 macOS io-read regression).
+    """
+    block = shared_memory.SharedMemory(create=True, size=16384)
+    try:
+        expected = np.arange(256, dtype=np.float64)
+        buffer = np.ndarray((256,), dtype=np.float64, buffer=block.buf)
+        buffer[...] = expected
+        descriptor = SharedMemoryDescriptor(
+            name=block.name,
+            dtype="float64",
+            shape=(256,),
+            nbytes=2048,
+            unit="",
+        )
+        preview = _invoke(_ATTACH_OWNER, lambda: attach_block(descriptor))
+        try:
+            values = np.asarray(preview.values)
+            assert values.shape == (256,)
+            assert values.dtype == np.dtype(np.float64)
+            assert values.nbytes == 2048
+            np.testing.assert_array_equal(values, expected)
+        finally:
+            preview.handle.close()
+    finally:
+        _close_and_unlink(block)
+
+
+@pytest.mark.contract("C-SHM-022")
+def test_attach_block_rejects_self_inconsistency_despite_roomy_block() -> None:
+    """Check 1 fires before the actual-size check, even with room to spare."""
+    block = shared_memory.SharedMemory(create=True, size=16384)
+    try:
+        descriptor = SharedMemoryDescriptor(
+            name=block.name,
+            dtype="float64",
+            shape=(256,),
+            nbytes=4096,
             unit="",
         )
         _expect_shm_error(
