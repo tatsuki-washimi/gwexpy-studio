@@ -11,7 +11,10 @@ from scripts.diagnose_trial_gate import (
     OBSERVATION_KEYS,
     DiagnosticObservation,
     DiagnosticSchemaError,
+    _hash_id,
     _result_is_current,
+    _safe_code,
+    _safe_label,
     classify_process_outcome,
     parse_snapshot,
 )
@@ -171,3 +174,60 @@ def test_read_result_captures_target_before_preview_settlement() -> None:
     assert observation.observations["object_present"] is True
     assert observation.observations["object_resident"] is True
     assert observation.observations["preview_completed"] is False
+
+
+def test_trace_records_ordered_boundaries_without_raw_text(tmp_path) -> None:
+    observation = DiagnosticObservation(
+        branch_sha="a" * 40,
+        original_gate_sha="b" * 64,
+        source_sha="c" * 40,
+        wheel_sha="d" * 64,
+        snapshot_path=tmp_path / "diagnostic-snapshot.json",
+    )
+    observation.record_stage("io_read")
+    observation.record_wait("normal I/O read", False)
+    observation.observe_dispatch("preview", True)
+    observation.observe_result("preview", True, current=False)
+    observation.observe_select("select_entered", {"kind_allowed": True})
+    observation.observe_error_code("invalid_response")
+    observation.observe_predicate_vector(
+        bridge_idle=True,
+        object_count=1,
+        resident_nonempty=True,
+        preview_seen=False,
+    )
+
+    import json as _json
+
+    trace = _json.loads(
+        (tmp_path / "diagnostic-trace.json").read_bytes().decode("utf-8")
+    )
+    assert trace["schema"] == 1
+    assert isinstance(trace["instrumented"], list) and trace["instrumented"]
+    events = [entry["event"] for entry in trace["events"]]
+    assert events == [
+        "stage",
+        "wait",
+        "dispatch_returned",
+        "result",
+        "select_entered",
+        "show_error",
+        "predicate_vector",
+    ]
+    seqs = [entry["seq"] for entry in trace["events"]]
+    assert seqs == sorted(seqs)
+    assert all(entry["mono_ns"] > 0 for entry in trace["events"])
+    raw = (tmp_path / "diagnostic-trace.json").read_bytes()
+    assert b"/home" not in raw
+    # Snapshot schema stays frozen at the closed field set.
+    document = _json.loads(observation.to_json())
+    assert set(document) == set(OBSERVATION_KEYS)
+
+
+def test_trace_sanitizes_untrusted_label_and_code(tmp_path) -> None:
+    assert _safe_label("normal I/O read") == "normal I/O read"
+    assert _safe_label("/home/user/secret") == "untrusted"
+    assert _safe_code("invalid_response") == "invalid_response"
+    assert _safe_code("has space") == "unknown_code"
+    assert _hash_id(None) == "none"
+    assert len(_hash_id("object-1")) == 16

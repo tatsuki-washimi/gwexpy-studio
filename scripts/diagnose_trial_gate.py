@@ -19,6 +19,8 @@ import re
 import signal
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -145,6 +147,76 @@ _PENDING_ACTIONS = frozenset(
 )
 _PENDING_ACTION_CLASSES = frozenset({"none", "read", "preview", "restore", "other"})
 
+# Ordered diagnostic trace (diagnostic-only sidecar; the closed snapshot above
+# stays frozen at schema 1).  The trace records the ORDER of observed
+# boundaries so absence means "not observed", never "did not happen".  Only
+# fixed event names, booleans, small ints, sanitized labels, fixed error
+# codes, and one-way hashed IDs are stored; no paths, messages, or raw IDs.
+_TRACE_SCHEMA = 1
+_TRACE_EVENTS = frozenset(
+    {
+        "stage",
+        "wait",
+        "dispatch_requested",
+        "dispatch_returned",
+        "result",
+        "select_entered",
+        "select_completed",
+        "preview_entered",
+        "preview_completed",
+        "review_ok",
+        "show_error",
+        "predicate_vector",
+        "click",
+    }
+)
+_INSTRUMENTED_BOUNDARIES = (
+    "read result observed",
+    "UI read-result handler completed (via select entry or error)",
+    "select entered",
+    "select kind gate",
+    "select preview dispatch",
+    "preview request dispatched",
+    "preview result observed",
+    "UI preview callback entered",
+    "UI preview callback completed",
+    "set_preview entered",
+    "set_preview completed",
+    "gate completion predicate (via wait label)",
+)
+_LABEL_PATTERN = re.compile(r"[A-Za-z0-9 /_.\-]{1,64}")
+# Wait labels come only from fixed gate-source literals (verified: 33 labels,
+# none contains a path).  Guard against a future label accidentally carrying
+# filesystem or secret text.
+_LABEL_DENY = ("/home", ".ssh", "token", "..", "passwd")
+_CODE_PATTERN = re.compile(r"[a-z_]{1,64}")
+
+
+def _hash_id(value: object) -> str:
+    """Return a one-way 16-hex digest of an ID, or a fixed token."""
+    if value is None:
+        return "none"
+    try:
+        return hashlib.sha256(repr(value).encode("utf-8")).hexdigest()[:16]
+    except BaseException:
+        return "unknown"
+
+
+def _safe_label(label: object) -> str:
+    if (
+        isinstance(label, str)
+        and _LABEL_PATTERN.fullmatch(label) is not None
+        and not any(denied in label for denied in _LABEL_DENY)
+    ):
+        return label
+    return "untrusted"
+
+
+def _safe_code(code: object) -> str:
+    if isinstance(code, str) and _CODE_PATTERN.fullmatch(code) is not None:
+        return code
+    return "unknown_code"
+
 
 def _empty_observations() -> dict[str, object]:
     return {
@@ -196,6 +268,8 @@ class DiagnosticObservation:
     snapshot_path: Path | None = None
     _expected_object_id: str | None = field(default=None, repr=False)
     _awaiting_restore_preview: bool = field(default=False, repr=False)
+    _trace: list[dict[str, object]] = field(default_factory=list, repr=False)
+    _trace_seq: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         """Validate immutable provenance and the initial closed snapshot."""
@@ -305,15 +379,112 @@ class DiagnosticObservation:
             raise DiagnosticSchemaError("diagnostic temporary path is unsafe")
         temporary.write_bytes(self.to_json())
         os.replace(temporary, target)
+        self.write_trace()
+
+    @property
+    def trace_path(self) -> Path | None:
+        """Sibling sidecar of the snapshot; None keeps snapshot-only mode."""
+        if self.snapshot_path is None:
+            return None
+        return self.snapshot_path.with_name("diagnostic-trace.json")
+
+    def record_trace(self, event: str, detail: Mapping[str, object]) -> None:
+        """Append one ordered observation; never raises, never leaks raw text."""
+        if event not in _TRACE_EVENTS:
+            event = "stage"
+        safe: dict[str, object] = {}
+        for key, value in detail.items():
+            if type(value) is bool or type(value) is int:
+                safe[str(key)] = value
+            elif isinstance(value, str) and len(value) <= 64:
+                safe[str(key)] = value
+            else:
+                safe[str(key)] = "omitted"
+        try:
+            self._trace_seq += 1
+            self._trace.append(
+                {
+                    "seq": self._trace_seq,
+                    "mono_ns": time.monotonic_ns(),
+                    "thread": threading.current_thread().name[:64],
+                    "event": event,
+                    "detail": safe,
+                }
+            )
+        except BaseException:
+            return
+        self.write_trace()
+
+    def write_trace(self) -> None:
+        """Persist the ordered trace next to the snapshot (best effort)."""
+        target = self.trace_path
+        if target is None:
+            return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                return
+            payload = (
+                json.dumps(
+                    {
+                        "schema": _TRACE_SCHEMA,
+                        "instrumented": list(_INSTRUMENTED_BOUNDARIES),
+                        "events": self._trace,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+            )
+            temporary = target.with_name(target.name + ".tmp")
+            if temporary.is_symlink():
+                return
+            temporary.write_bytes(payload)
+            os.replace(temporary, target)
+        except BaseException:
+            return
+
+    def observe_select(self, event: str, detail: Mapping[str, object]) -> None:
+        """Record one select/preview-decision boundary in trace order."""
+        if event not in {"select_entered", "select_completed"}:
+            event = "select_entered"
+        self.record_trace(event, detail)
+
+    def observe_error_code(self, code: object) -> None:
+        """Record only the fixed application error code, never the message."""
+        self.record_trace("show_error", {"code": _safe_code(code)})
+
+    def observe_predicate_vector(
+        self,
+        *,
+        bridge_idle: bool,
+        object_count: int,
+        resident_nonempty: bool,
+        preview_seen: bool,
+    ) -> None:
+        """Record the gate completion predicate conjuncts at a wait boundary."""
+        self.record_trace(
+            "predicate_vector",
+            {
+                "bridge_idle": bool(bridge_idle),
+                "object_count": int(object_count),
+                "resident_nonempty": bool(resident_nonempty),
+                "preview_seen": bool(preview_seen),
+            },
+        )
 
     def record_stage(self, stage: str) -> None:
         """Record one fixed formal-gate stage after normalizing its name."""
         self.stage = _safe_stage(stage)
+        self.record_trace("stage", {"stage": self.stage})
         self.write()
 
     def record_wait(self, label: str, success: bool) -> None:
         """Record a bounded wait and classify an expired predicate without text."""
-        del label
+        self.record_trace(
+            "wait", {"label": _safe_label(label), "success": bool(success)}
+        )
         if not success:
             if self.failure_category == "none":
                 self.failure_category = "wait_expired"
@@ -353,10 +524,17 @@ class DiagnosticObservation:
         self.observations["click_invoked"] = True
         if signal_observed:
             self.observations["click_signal_observed"] = True
+        self.record_trace(
+            "click", {"invoked": True, "signal_observed": bool(signal_observed)}
+        )
         self.write()
 
     def observe_dispatch(self, kind: str, accepted: bool) -> None:
-        """Record only the fixed read and restore dispatch boundaries."""
+        """Record read/restore dispatch in the snapshot and all kinds in trace."""
+        self.record_trace(
+            "dispatch_returned",
+            {"kind": _safe_label(kind), "accepted": bool(accepted)},
+        )
         if kind == "read_io":
             self.observations["read_dispatch_returned"] = True
             self.observations["read_dispatch_accepted"] = accepted
@@ -371,13 +549,24 @@ class DiagnosticObservation:
         self.write()
 
     def observe_dispatch_requested(self, kind: str) -> None:
-        """Record entry into the restore dispatch boundary before it can raise."""
+        """Record entry into the dispatch boundary before it can raise."""
+        self.record_trace("dispatch_requested", {"kind": _safe_label(kind)})
         if kind == "restore_project":
             self.observations["restore_dispatch_requested"] = True
             self.write()
 
-    def observe_result(self, action: str | None, success: bool) -> None:
+    def observe_result(
+        self, action: str | None, success: bool, *, current: bool = True
+    ) -> None:
         """Record fixed result outcomes without retaining payloads or IDs."""
+        self.record_trace(
+            "result",
+            {
+                "action": _safe_label(action or "unknown"),
+                "success": bool(success),
+                "current": bool(current),
+            },
+        )
         if action == "signal_read_io":
             self.observations["read_result_observed"] = True
             self.observations["read_result_success"] = success
@@ -497,16 +686,19 @@ class DiagnosticObservation:
     def observe_preview_entered(self) -> None:
         """Record entry into the real preview display callback."""
         self.observations["preview_entered"] = True
+        self.record_trace("preview_entered", {})
         self.write()
 
     def observe_preview_completed(self) -> None:
         """Record successful return from the real preview display callback."""
         self.observations["preview_completed"] = True
+        self.record_trace("preview_completed", {})
         self.write()
 
     def observe_review_ok(self) -> None:
         """Record a Review modal that returned the required Ok result."""
         self.observations["review_modal_returned_ok"] = True
+        self.record_trace("review_ok", {})
         self.write()
 
 
@@ -613,6 +805,8 @@ def _install_in_memory_observers(
     original_window_init = window_type.__init__
     original_dispatch = window_type._dispatch_command
     original_result = window_type._on_bridge_result
+    original_select = window_type._select_object_and_request_preview
+    original_show_error = window_type._show_error
     original_preview = plot_type.set_preview
     original_qtest = qt_test_module.QTest
     _latest_window: list[Any | None] = [None]
@@ -640,6 +834,29 @@ def _install_in_memory_observers(
                 observation.record_failure("callback_failure")
             if _latest_window[0] is not None:
                 observation.observe_window(_latest_window[0])
+                window = _latest_window[0]
+                try:
+                    bridge = window.bridge
+                    state = getattr(bridge.state, "value", bridge.state)
+                    objects = getattr(getattr(window, "project", None), "objects", ())
+                    status = getattr(window, "_workspace_status", {})
+                    resident_ids = (
+                        status.get("resident_object_ids", ())
+                        if isinstance(status, Mapping)
+                        else ()
+                    )
+                    observation.observe_predicate_vector(
+                        bridge_idle=(state == "idle"),
+                        object_count=(
+                            len(objects) if hasattr(objects, "__len__") else -1
+                        ),
+                        resident_nonempty=bool(resident_ids),
+                        preview_seen=bool(
+                            observation.observations["preview_completed"]
+                        ),
+                    )
+                except BaseException:
+                    pass
             raise
         observation.record_wait(label, True)
         if _latest_window[0] is not None:
@@ -668,13 +885,38 @@ def _install_in_memory_observers(
         success = bool(getattr(bridge_result, "success", False))
         pending_command_id = getattr(self, "_pending_command_id", None)
         result_command_id = getattr(bridge_result, "command_id", None)
-        if _result_is_current(pending_command_id, result_command_id):
-            observation.observe_result(action, success)
+        current = bool(_result_is_current(pending_command_id, result_command_id))
+        if current:
+            observation.observe_result(action, success, current=True)
+        else:
+            observation.observe_result(action, success, current=False)
         result_value = observation.forward_callback(
             original_result, self, bridge_result
         )
         observation.observe_window(self)
         return result_value
+
+    def select(self: Any, obj_ref: Any) -> Any:
+        kind = getattr(obj_ref, "kind", None)
+        allowed = kind in {"TimeSeries", "FrequencySeries", "Spectrogram"}
+        observation.observe_select(
+            "select_entered",
+            {
+                "kind_allowed": bool(allowed),
+                "object": _hash_id(getattr(obj_ref, "object_id", None)),
+            },
+        )
+        try:
+            result_value = observation.forward_callback(original_select, self, obj_ref)
+        except BaseException:
+            observation.observe_select("select_completed", {"completed": False})
+            raise
+        observation.observe_select("select_completed", {"completed": True})
+        return result_value
+
+    def show_error(self: Any, code: str, message: str) -> Any:
+        observation.observe_error_code(code)
+        return observation.forward_callback(original_show_error, self, code, message)
 
     def preview(self: Any, *args: Any, **kwargs: Any) -> Any:
         observation.observe_preview_entered()
@@ -700,6 +942,8 @@ def _install_in_memory_observers(
     window_type.__init__ = window_init
     window_type._dispatch_command = dispatch
     window_type._on_bridge_result = result
+    window_type._select_object_and_request_preview = select
+    window_type._show_error = show_error
     plot_type.set_preview = preview
     qt_test_module.QTest = _QTestObserver(
         original_qtest,
@@ -722,6 +966,8 @@ def _install_in_memory_observers(
         window_type.__init__ = original_window_init
         window_type._dispatch_command = original_dispatch
         window_type._on_bridge_result = original_result
+        window_type._select_object_and_request_preview = original_select
+        window_type._show_error = original_show_error
         plot_type.set_preview = original_preview
         qt_test_module.QTest = original_qtest
 
