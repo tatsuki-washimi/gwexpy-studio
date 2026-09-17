@@ -168,6 +168,7 @@ _TRACE_EVENTS = frozenset(
         "show_error",
         "predicate_vector",
         "click",
+        "shm_site",
     }
 )
 _INSTRUMENTED_BOUNDARIES = (
@@ -183,7 +184,9 @@ _INSTRUMENTED_BOUNDARIES = (
     "set_preview entered",
     "set_preview completed",
     "gate completion predicate (via wait label)",
+    "SHM descriptor decode/attach site (preview fetch only)",
 )
+_DTYPE_PATTERN = re.compile(r"[a-zA-Z0-9_]{1,32}")
 _LABEL_PATTERN = re.compile(r"[A-Za-z0-9 /_.\-]{1,64}")
 # Wait labels come only from fixed gate-source literals (verified: 33 labels,
 # none contains a path).  Guard against a future label accidentally carrying
@@ -216,6 +219,26 @@ def _safe_code(code: object) -> str:
     if isinstance(code, str) and _CODE_PATTERN.fullmatch(code) is not None:
         return code
     return "unknown_code"
+
+
+def _safe_dtype(dtype: object) -> str:
+    if isinstance(dtype, str) and _DTYPE_PATTERN.fullmatch(dtype) is not None:
+        return dtype
+    return "unknown_dtype"
+
+
+def _safe_shape(shape: object) -> str:
+    """Render a shape tuple of ints, or a fixed token when not applicable."""
+    if (
+        isinstance(shape, tuple)
+        and shape
+        and all(type(value) is int for value in shape)
+        and all(0 <= value < 10**9 for value in shape)
+    ):
+        rendered = "(" + ",".join(str(value) for value in shape) + ")"
+        if len(rendered) <= 64:
+            return rendered
+    return "unknown_shape"
 
 
 def _empty_observations() -> dict[str, object]:
@@ -454,6 +477,10 @@ class DiagnosticObservation:
     def observe_error_code(self, code: object) -> None:
         """Record only the fixed application error code, never the message."""
         self.record_trace("show_error", {"code": _safe_code(code)})
+
+    def observe_shm_site(self, detail: Mapping[str, object]) -> None:
+        """Record one SHM decode/attach site with ints and fixed tokens only."""
+        self.record_trace("shm_site", detail)
 
     def observe_predicate_vector(
         self,
@@ -807,6 +834,10 @@ def _install_in_memory_observers(
     original_result = window_type._on_bridge_result
     original_select = window_type._select_object_and_request_preview
     original_show_error = window_type._show_error
+    client_module = importlib.import_module("gwexpy_studio.worker.client")
+    original_descriptor_error = client_module._descriptor_error
+    original_attach = client_module.attach_block
+    original_fetch_array = client_module.WorkerClient.fetch_array
     original_preview = plot_type.set_preview
     original_qtest = qt_test_module.QTest
     _latest_window: list[Any | None] = [None]
@@ -918,6 +949,71 @@ def _install_in_memory_observers(
         observation.observe_error_code(code)
         return observation.forward_callback(original_show_error, self, code, message)
 
+    def descriptor_error(detail: str) -> Any:
+        # _descriptor_error always raises by design; calling it directly
+        # avoids misclassifying the application's own error path as an
+        # observer callback failure.
+        observation.observe_shm_site({"site": "descriptor_decode"})
+        return original_descriptor_error(detail)
+
+    def attach_block(descriptor: Any, **kwargs: Any) -> Any:
+        observation.observe_shm_site(
+            {
+                "site": "attach_entry",
+                "dtype": _safe_dtype(getattr(descriptor, "dtype", None)),
+                "shape": _safe_shape(getattr(descriptor, "shape", None)),
+                "nbytes": getattr(descriptor, "nbytes", -1)
+                if type(getattr(descriptor, "nbytes", None)) is int
+                else -1,
+            }
+        )
+        try:
+            # SharedMemoryError is the application's normal error-reporting
+            # path here; call through directly so it is never recorded as an
+            # observer callback failure.
+            return original_attach(descriptor, **kwargs)
+        except BaseException as error:
+            actual: object = "unprobed"
+            try:
+                from multiprocessing import shared_memory
+
+                probe = shared_memory.SharedMemory(
+                    name=getattr(descriptor, "name", "")
+                )
+                try:
+                    actual = probe.size
+                finally:
+                    probe.close()
+            except FileNotFoundError:
+                actual = "not_found"
+            except BaseException:
+                actual = "unprobed"
+            observation.observe_shm_site(
+                {
+                    "site": "attach_failed",
+                    "code": _safe_code(getattr(error, "code", None)),
+                    "actual_size": actual if type(actual) is int else -1,
+                    "actual_state": "present"
+                    if type(actual) is int
+                    else str(actual),
+                }
+            )
+            raise
+
+    def fetch_array(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            # Same rationale as attach_block: worker/app errors propagate
+            # through here by design and must not become callback_failure.
+            return original_fetch_array(self, *args, **kwargs)
+        except BaseException as error:
+            observation.observe_shm_site(
+                {
+                    "site": "fetch_failed",
+                    "code": _safe_code(getattr(error, "code", None)),
+                }
+            )
+            raise
+
     def preview(self: Any, *args: Any, **kwargs: Any) -> Any:
         observation.observe_preview_entered()
         result_value = observation.forward_callback(
@@ -944,6 +1040,9 @@ def _install_in_memory_observers(
     window_type._on_bridge_result = result
     window_type._select_object_and_request_preview = select
     window_type._show_error = show_error
+    client_module._descriptor_error = descriptor_error
+    client_module.attach_block = attach_block
+    client_module.WorkerClient.fetch_array = fetch_array
     plot_type.set_preview = preview
     qt_test_module.QTest = _QTestObserver(
         original_qtest,
@@ -968,6 +1067,9 @@ def _install_in_memory_observers(
         window_type._on_bridge_result = original_result
         window_type._select_object_and_request_preview = original_select
         window_type._show_error = original_show_error
+        client_module._descriptor_error = original_descriptor_error
+        client_module.attach_block = original_attach
+        client_module.WorkerClient.fetch_array = original_fetch_array
         plot_type.set_preview = original_preview
         qt_test_module.QTest = original_qtest
 

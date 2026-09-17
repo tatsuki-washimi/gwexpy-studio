@@ -231,3 +231,40 @@ def test_trace_sanitizes_untrusted_label_and_code(tmp_path) -> None:
     assert _safe_code("has space") == "unknown_code"
     assert _hash_id(None) == "none"
     assert len(_hash_id("object-1")) == 16
+
+
+def test_shm_site_trace_keeps_ints_and_fixed_tokens_only(tmp_path) -> None:
+    from scripts.diagnose_trial_gate import _safe_dtype, _safe_shape
+
+    assert _safe_dtype("float64") == "float64"
+    assert _safe_dtype("../../etc") == "unknown_dtype"
+    assert _safe_shape((800,)) == "(800)"
+    assert _safe_shape(("800",)) == "unknown_shape"
+    assert _safe_shape(()) == "unknown_shape"
+
+    observation = DiagnosticObservation(
+        branch_sha="a" * 40,
+        original_gate_sha="b" * 64,
+        source_sha="c" * 40,
+        wheel_sha="d" * 64,
+        snapshot_path=tmp_path / "diagnostic-snapshot.json",
+    )
+    observation.observe_shm_site(
+        {"site": "attach_entry", "dtype": "float64", "nbytes": 6400}
+    )
+    observation.observe_shm_site(
+        {"site": "fetch_failed", "code": "shm_invalid_descriptor"}
+    )
+
+    import json as _json
+
+    trace = _json.loads(
+        (tmp_path / "diagnostic-trace.json").read_bytes().decode("utf-8")
+    )
+    sites = [entry["detail"]["site"] for entry in trace["events"]]
+    assert sites == ["attach_entry", "fetch_failed"]
+    raw = (tmp_path / "diagnostic-trace.json").read_bytes()
+    assert b"shm_invalid_descriptor" in raw
+    # Snapshot schema stays frozen.
+    document = _json.loads(observation.to_json())
+    assert set(document) == set(OBSERVATION_KEYS)
