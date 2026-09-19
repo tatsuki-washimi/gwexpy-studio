@@ -19,14 +19,14 @@ Pythonコードを書く必要はありません。Git、ソースコードの�
 
 | 使用する環境 | 新しい試用版の入手先 | このページ内のインストール手順 |
 |---|---|---|
-| Ubuntu 24.04、x86_64、通常のデスクトップ（WSLではない） | 公開準備中 | [Ubuntuの手順](#install-ubuntu) |
-| Debian 13、x86_64、通常のデスクトップ（WSLではない） | 公開準備中 | [Debianの手順](#install-debian) |
-| Windows 11 x86_64 ＋ WSL2 Ubuntu 24.04 ＋ WSLg | 公開準備中 | [Windows／WSL2の手順](#install-wsl2) |
-| Windows 11 ARM64 ＋ WSL2 Ubuntu 24.04 aarch64 ＋ WSLg | 公開準備中 | [Windows／WSL2の手順](#install-wsl2) |
-| Apple Silicon Mac、macOS 15以上 | 公開準備中 | [Macの手順](#install-macos) |
+| Ubuntu 24.04、x86_64、通常のデスクトップ（WSLではない） | 未公開 | [Ubuntuの手順](#install-ubuntu) |
+| Debian 13、x86_64、通常のデスクトップ（WSLではない） | 未公開 | [Debianの手順](#install-debian) |
+| Windows 11 x86_64 ＋ WSL2 Ubuntu 24.04 ＋ WSLg | 未公開 | [Windows／WSL2の手順](#install-wsl2) |
+| Windows 11 ARM64 ＋ WSL2 Ubuntu 24.04 aarch64 ＋ WSLg | 未公開 | [Windows／WSL2の手順](#install-wsl2) |
+| Apple Silicon Mac、macOS 15以上 | 未公開 | [Macの手順](#install-macos) |
 
 <!--
-公開担当者へ：公開・再取得検証を終えたtargetだけ、上表の「公開準備中」を
+公開担当者へ：公開・再取得検証を終えたtargetだけ、上表の「未公開」を
 そのtargetのReleaseページ、実在するZIPと.zip.sha256のリンクへ置き換える。
 WSL2の2行は同じtargetのZIPを参照する。CPU別constraintsは手順内で選択する。
 推測したasset名、/releases/latest、旧Ubuntu版への自動fallbackは使わない。
