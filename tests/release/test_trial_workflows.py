@@ -523,7 +523,7 @@ def test_trial_documents_start_from_the_two_release_assets() -> None:
     japanese_readme = (REPOSITORY_ROOT / "README.ja.md").read_text(encoding="utf-8")
     assert "being prepared" not in english_readme
     assert "There is no public trial wheel" not in english_readme
-    assert "準備中" not in japanese_readme
+    assert "公開準備中" in japanese_readme
     assert "public trial wheelもPyPI releaseもない" not in japanese_readme
     for document in (english_readme, japanese_readme):
         assert "docs/trial" in document
