@@ -1,31 +1,47 @@
 # Development from source
 
-This document is for contributors.
+This document is for contributors who intentionally work from a source checkout.
+For the short installation decision tree, see [the installation guide](installation.md).
 
 It is not the installation method for trial participants.
 
-The first participant-facing trial will install a wheel into a conda Python
-3.12 environment without Git or an editable install.
+Trial participants must use the release ZIP, checksum, constraints, and
+platform-specific Quick Start supplied with the matching prerelease.
 
-## Python environment
+## Install the runtime
 
 Use Python 3.12 from the repository root.
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -c constraints/signal-linux-py312.txt -e '.[dev]'
+.venv/bin/python -m pip install .
 .venv/bin/python -m pip check
-gwexpy-studio
+.venv/bin/gwexpy-studio
 ```
 
-Qt is a base runtime dependency of the trial wheel.
+`python -m pip install .` installs the runtime dependencies, including the
+PySide6 GUI dependency, and creates the launcher inside `.venv`.
 
-The `dev` extra supplies development tools.
+## Add development tools
+
+The `dev` extra supplies test, lint, and type-checking tools.
+
+```bash
+.venv/bin/python -m pip install '.[dev]'
+```
+
+When actively editing the checkout, use an editable install instead:
+
+```bash
+.venv/bin/python -m pip install -e '.[dev]'
+```
+
+The editable form is for development and is not part of the participant path.
 
 To open an explicit saved project during development, pass one `.gwxproj` path.
 
 ```bash
-gwexpy-studio analysis.gwxproj
+.venv/bin/gwexpy-studio analysis.gwxproj
 ```
 
 ## Tests

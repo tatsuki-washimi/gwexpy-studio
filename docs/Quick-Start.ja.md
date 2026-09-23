@@ -1,5 +1,8 @@
 # GWexpy Studio 試用版クイックスタート
 
+このページは、検証済み試用版ZIPを使う参加者向けです。
+source checkoutから実行または開発する場合は、[source導入ガイド](installation.ja.md)を使い、二つの経路を混ぜません。
+
 初回の試験対象はUbuntu 24.04 x86_64だけです。
 
 開始前にMiniforgeなどのconda環境を導入してください。

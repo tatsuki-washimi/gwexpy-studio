@@ -78,6 +78,16 @@ def test_default_policy_includes_public_gui_trial_tests() -> None:
     assert policy.classify("scripts/extract_trial_artifact.py") == "include"
     assert policy.classify("docs/Quick-Start.md") == "include"
     assert policy.classify("docs/Quick-Start.ja.md") == "include"
+    assert policy.classify("docs/installation.md") == "include"
+    assert policy.classify("docs/installation.ja.md") == "include"
+    for screenshot in (
+        "01-welcome.png",
+        "02-try-sample.png",
+        "03-asd.png",
+        "04-reopen-project.png",
+    ):
+        assert policy.classify(f"docs/images/installation/{screenshot}") == "include"
+    assert policy.classify("scripts/capture_installation_screenshots.py") == "include"
     assert policy.classify("docs/Feedback.ja.md") == "include"
     assert policy.classify("scripts/package_trial_release.py") == "include"
     assert policy.classify("scripts/verify_trial_release.py") == "include"

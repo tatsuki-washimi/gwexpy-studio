@@ -1,5 +1,8 @@
 # GWexpy Studio WSL2 trial quick start
 
+This page is for participants using the verified WSL2 trial ZIP.
+For a source checkout, use the [source installation guide](../../installation.md) instead; a source install is not a workaround for a failed WSL2 preflight.
+
 This guide applies only to the `wsl2-ubuntu24` prerelease: Windows 11 with an
 Ubuntu 24.04 WSL2 guest and WSLg. Both x86_64 and aarch64 are supported by this
 bundle. Do not use it on native Ubuntu or macOS.

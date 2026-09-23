@@ -1,5 +1,8 @@
 # GWexpy Studio macOS試用版クイックスタート
 
+このページは、検証済みmacOS試用版ZIPを使う参加者向けです。
+source checkoutから実行または開発する場合は、[source導入ガイド](../../installation.ja.md)を使い、二つの経路を混ぜません。
+
 この手順は、Apple Silicon MacとmacOS 15以上で使う`macos15-arm64`
 prerelease専用です。Intel Mac、WSL2、Linuxでは使用しません。
 

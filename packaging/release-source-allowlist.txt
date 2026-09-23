@@ -27,6 +27,9 @@ include docs/adr/**
 include docs/architecture-overview.md
 include docs/design/**
 include docs/development.md
+include docs/installation.md
+include docs/installation.ja.md
+include docs/images/installation/**
 include docs/Quick-Start.md
 include docs/Quick-Start.ja.md
 include docs/Feedback.ja.md
@@ -52,6 +55,7 @@ include scripts/export_release_source.py
 include scripts/verify_public_source.py
 include scripts/build_trial_wheel.py
 include scripts/capture_trial_resolution.py
+include scripts/capture_installation_screenshots.py
 include scripts/run_trial_technical_gate.py
 include scripts/assemble_trial_bundle.py
 include scripts/verify_trial_bundle.py

@@ -1,5 +1,8 @@
 # GWexpy Studio WSL2試用版クイックスタート
 
+このページは、検証済みWSL2試用版ZIPを使う参加者向けです。
+source checkoutから実行または開発する場合は、[source導入ガイド](../../installation.ja.md)を使います。WSL2のpreflightに失敗した場合の回避策としてsource installを使いません。
+
 この手順は、Windows 11、Ubuntu 24.04のWSL2 guest、WSLgで使う
 `wsl2-ubuntu24` prerelease専用です。x86_64とaarch64に対応します。
 native UbuntuやmacOSでは使用しません。

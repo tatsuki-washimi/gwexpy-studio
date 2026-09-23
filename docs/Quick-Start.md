@@ -1,5 +1,8 @@
 # GWexpy Studio trial quick start
 
+This page is for participants using a verified trial ZIP.
+If you are working from a source checkout, use the [source installation guide](installation.md) instead; do not mix the two routes.
+
 This initial participant trial supports Ubuntu 24.04 x86_64 only.
 
 Install Miniforge or another conda distribution before starting.
