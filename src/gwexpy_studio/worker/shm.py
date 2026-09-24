@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import os
 import re
+import secrets
+import sys
 import uuid
 from dataclasses import dataclass
 from multiprocessing import resource_tracker, shared_memory
@@ -14,6 +16,8 @@ from ..errors import SharedMemoryError
 
 SHM_SIZE_LIMIT_BYTES: int = 1 * 1024**3
 _SHM_PREFIX_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,80}")
+_DARWIN_SHM_PREFIX_MAX_BYTES = 14
+_DARWIN_SHM_NAME_MAX_BYTES = 30
 _tracker_owner_pid = os.getpid()
 
 try:
@@ -73,6 +77,11 @@ class FetchedArray:
     unit: str
 
 
+def _platform_is_darwin() -> bool:
+    """Return whether explicit POSIX names use Darwin's 31-byte kernel cap."""
+    return sys.platform == "darwin"
+
+
 def _owned_shm_name() -> str | None:
     prefix = os.environ.get("GWEXPY_STUDIO_SHM_PREFIX")
     if prefix is None:
@@ -82,7 +91,21 @@ def _owned_shm_name() -> str | None:
             "GWEXPY_STUDIO_SHM_PREFIX contains unsafe characters",
             code="invalid_payload",
         )
-    return f"{prefix}{uuid.uuid4().hex}"
+    if _platform_is_darwin() and len(prefix.encode("ascii")) > (
+        _DARWIN_SHM_PREFIX_MAX_BYTES
+    ):
+        raise SharedMemoryError(
+            "GWEXPY_STUDIO_SHM_PREFIX exceeds Darwin's 14-byte limit",
+            code="invalid_payload",
+        )
+    suffix = secrets.token_hex(8) if _platform_is_darwin() else uuid.uuid4().hex
+    name = f"{prefix}{suffix}"
+    if _platform_is_darwin() and len(name.encode("ascii")) > _DARWIN_SHM_NAME_MAX_BYTES:
+        raise SharedMemoryError(
+            "Shared-memory name exceeds Darwin's 30-byte limit",
+            code="invalid_payload",
+        )
+    return name
 
 
 def create_block(array: Any) -> SharedMemoryBlock:
@@ -173,8 +196,13 @@ def attach_block(
        exactly ``nbytes`` (``prod(shape) * dtype.itemsize == nbytes``). If a
        JSON round trip across the IPC boundary desynchronizes these fields,
        this is caught before any shared-memory block is even opened.
-    2. **Descriptor vs. reality**: the declared ``nbytes`` must match the
-       actual shared-memory block size once opened (checked below).
+    2. **Descriptor vs. reality**: the actual shared-memory block must hold
+       at least the declared ``nbytes`` (checked below). Platforms may back
+       a small block with a larger page-rounded segment (observed: a 2048
+       byte preview block reported as 16384 bytes on macOS ARM64); the
+       declared ``shape``/``dtype`` view always fits inside. A block
+       *smaller* than declared would truncate the view and stays a hard
+       failure.
 
     Without check 1, a descriptor with an ``nbytes`` larger than what
     ``shape``/``dtype`` require would silently succeed and copy out only the
@@ -215,11 +243,11 @@ def attach_block(
             code="shm_not_found",
         ) from exc
 
-    if shm.size != descriptor.nbytes:
+    if shm.size < descriptor.nbytes:
         shm.close()
         raise SharedMemoryError(
             "Shared memory size mismatch: descriptor declares "
-            f"{descriptor.nbytes} bytes, actual block is {shm.size} bytes",
+            f"{descriptor.nbytes} bytes, actual block is only {shm.size} bytes",
             code="shm_invalid_descriptor",
         )
 

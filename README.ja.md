@@ -14,24 +14,44 @@ PythonやJupyterに慣れていない研究者と学生が、Gitを使わずに�
 OS別Quick Startは、配布ZIPのqualificationや診断を詳しく記録する場合だけ参照します。
 
 - 検証済み試用版を使う場合は、対応するZIPとchecksumをダウンロードし、導入ガイド内の端末セクションを一つ選びます。
-- source checkoutを実行または変更する場合は、Python 3.12の仮想環境を作り、python -m pip install . を実行します。
+- source checkoutを実行または変更する場合は、Python 3.12の仮想環境を作り、`python -m pip install .`を実行します。
 
 試用版はビルド済みwheelとqualification済みconstraintsを使います。
 sourceの経路は、開発またはローカル評価のためにpackageの依存関係を解決します。
 
 ## 試用版の配布
 
-試用者には、公開担当者が明示した一つのGitHub prereleaseリンクを共有します。
+試用版は、targetごとのZIPと対応する外側checksum sidecarで配布します。
 
-同じBuild IDを持つZIPとchecksum sidecarをダウンロードし、外側と内部のchecksumを確認してから、導入ガイドの端末セクションへ進みます。
+候補文書は`ubuntu24-x86_64`、`debian13-x86_64`、`wsl2-ubuntu24`、
+`macos15-arm64`の4targetを扱います。
 
-現在公開済みのprereleaseは、conda Python 3.12を使うnative Ubuntu 24.04 x86_64専用です。
-WSL2とmacOSは、対応するassetが同じReleaseに含まれ、qualification済みである場合だけ利用します。
+guideが存在することは、そのtargetが公開済みまたはqualification済みであることを意味しません。
+送付者が明示した検証済みReleaseだけを使用してください。
+
+同じBuild IDを持つZIPとchecksum sidecarをダウンロードし、外側と内部のchecksumを確認してから、[導入ガイド](docs/installation.ja.md)の端末セクションまたはtarget別Quick Startへ進みます。
+
+試用者に必要なのは、Python 3.12を使うcondaです。
+Git、source checkout、editable install、GitHub accountは不要です。
+
+送付されたtarget名に対応するQuick Startを使ってください。
+Quick Startは、配布物に含まれるZIP、wheel、constraintsを一意に確認し、専用conda環境を作り、OSのPythonを変更せずに導入します。
+
+target別の手順は[docs/trial](docs/trial)にあります。
+公開後は外部の配布一覧で、現在のReleaseと実際に試験したOS版を確認してください。
+
+ZIPにはwheel、constraints、checksum、build identity、target別Quick Start、
+日本語のfeedback formを収録します。
+
+別のOS、CPU architecture、native／WSLの別、desktop環境では使用しません。
 
 試用版の経路にGit、source checkout、editable install、PyPIは含めません。
-試用版のwheel installを python -m pip install . に置き換えたり、constraintsを変更したり、dependencyをsourceからbuildしたりしません。
+試用版のwheel installを `python -m pip install .` に置き換えたり、constraintsを変更したり、dependencyをsourceからbuildしたりしません。
 
-## 最初の5分
+旧Ubuntu reference artifactは、今回の4target trialとは別に扱います。
+schema 3のtagとassetは互換性確認用に保持するもので、新しいqualification済みtargetを意味しません。
+
+## 基本Workflow
 
 導入後は、次の順に操作します。
 
@@ -80,3 +100,5 @@ source codeは[MIT license](LICENSE)です。
 開発環境を作るcontributorは、[導入ガイド](docs/installation.ja.md)と[開発ガイド](docs/development.md)を参照してください。
 
 public trial contractは[docs/release/0.1.0a1-trial-readiness.md](docs/release/0.1.0a1-trial-readiness.md)です。
+
+feedbackの送付方法は各bundleに収録します。

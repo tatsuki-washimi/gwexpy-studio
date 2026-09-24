@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import secrets
 import subprocess
 import sys
 import uuid
@@ -284,7 +285,9 @@ def _pid_exists(pid: int) -> bool:
 
 
 def _shm_names(prefix: str) -> set[str]:
-    """Return POSIX shared-memory names owned by one G0 worker scope."""
+    """Return Linux ``/dev/shm`` names owned by one G0 worker scope."""
+    if sys.platform != "linux":
+        return set()
     try:
         return {
             entry.name
@@ -300,7 +303,7 @@ def _owned_shm_prefix() -> Iterator[str]:
     """Isolate one spawned G0 worker from unrelated shared-memory activity."""
     variable = "GWEXPY_STUDIO_SHM_PREFIX"
     previous = os.environ.get(variable)
-    prefix = f"g0-{uuid.uuid4().hex}-"
+    prefix = f"g0-{secrets.token_hex(5)}"
     os.environ[variable] = prefix
     try:
         yield prefix

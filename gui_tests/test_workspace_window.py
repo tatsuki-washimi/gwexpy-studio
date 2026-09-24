@@ -403,6 +403,72 @@ def test_recovery_choices_are_explicit_and_never_replay_data(
     qapp.processEvents()
 
 
+@pytest.mark.contract("GUI-WSP-0028")
+@pytest.mark.gui
+def test_recovery_dialog_passes_its_instance_to_workspace_boundary(qapp, monkeypatch):
+    """Recovery binds the already-created message box explicitly."""
+    import gwexpy_studio.ui.workspace_window as workspace_module
+
+    captured = []
+
+    def fake_workspace_dialog(
+        _window, execute, *args, dialog_instance=None, **kwargs
+    ):
+        del args, kwargs
+        captured.append((execute, dialog_instance))
+        return None
+
+    monkeypatch.setattr(workspace_module, "workspace_dialog", fake_workspace_dialog)
+    window = MainWindow(bridge=WorkspaceBridge())
+    window._show_recovery_candidates(
+        [{"run_id": "unfinished", "project_path": "/tmp/document.gwxproj"}]
+    )
+
+    assert len(captured) == 1
+    execute, dialog = captured[0]
+    assert dialog is not None
+    assert getattr(execute, "__self__", None) is dialog
+    window.deleteLater()
+    qapp.processEvents()
+
+
+@pytest.mark.contract("GUI-WSP-0029")
+@pytest.mark.gui
+def test_restore_review_passes_its_instance_to_workspace_boundary(qapp, monkeypatch):
+    """Review binds its message box for a callable without ``__self__``."""
+    import gwexpy_studio.ui.workspace_window as workspace_module
+    from gwexpy_studio.ui.workspace_dialogs import workspace_dialog as original
+
+    captured = []
+
+    def fake_workspace_dialog(
+        window, _execute, *args, dialog_instance=None, **kwargs
+    ):
+        captured.append((dialog_instance, args, kwargs))
+        # Exercise the generic boundary with a plain callable. The explicit
+        # instance is the only way for it to identify the message box.
+        return original(
+            window,
+            lambda: QMessageBox.StandardButton.Cancel,
+            *args,
+            dialog_instance=dialog_instance,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(workspace_module, "workspace_dialog", fake_workspace_dialog)
+    window = MainWindow(bridge=WorkspaceBridge())
+    window._review_restore_response({"sources": []})
+
+    assert len(captured) == 1
+    dialog, args, kwargs = captured[0]
+    assert dialog is not None
+    assert args == ()
+    assert kwargs == {}
+    assert window._modal_active is False
+    window.deleteLater()
+    qapp.processEvents()
+
+
 @pytest.mark.contract("GUI-WSP-0019")
 @pytest.mark.gui
 def test_restore_review_displays_details_before_explicit_confirmation(qapp):

@@ -1,0 +1,25 @@
+{
+  "debian13_container": {
+    "digest": "sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f",
+    "image": "debian:13-slim",
+    "platform": "linux/amd64"
+  },
+  "miniforge": {
+    "artifacts": {
+      "Linux-aarch64": {
+        "filename": "Miniforge3-26.7.2-0-Linux-aarch64.sh",
+        "sha256": "89b786c8d2c8b0fda7553914c1314ae4ddaa094503802f279377b19ac4463cb2"
+      },
+      "Linux-x86_64": {
+        "filename": "Miniforge3-26.7.2-0-Linux-x86_64.sh",
+        "sha256": "281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05"
+      },
+      "MacOSX-arm64": {
+        "filename": "Miniforge3-26.7.2-0-MacOSX-arm64.sh",
+        "sha256": "d70bfa2e97afcda96927c9b9ca0e2316cb7750e4ce651c94388267cbe9588711"
+      }
+    },
+    "release": "26.7.2-0"
+  },
+  "schema": 1
+}

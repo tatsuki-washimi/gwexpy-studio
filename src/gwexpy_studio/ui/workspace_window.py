@@ -512,7 +512,10 @@ class WorkspaceTools(SignalTools):
         dialog.setStandardButtons(
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
         )
-        if workspace_dialog(self, dialog.exec) == QMessageBox.StandardButton.Ok:
+        if (
+            workspace_dialog(self, dialog.exec, dialog_instance=dialog)
+            == QMessageBox.StandardButton.Ok
+        ):
             if self._dispatch_command(
                 "restore_project",
                 {"review": dict(review), "confirmed": True},
@@ -543,7 +546,7 @@ class WorkspaceTools(SignalTools):
         restore = dialog.addButton("Restore", QMessageBox.ButtonRole.AcceptRole)
         discard = dialog.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
         dialog.addButton("Later", QMessageBox.ButtonRole.RejectRole)
-        workspace_dialog(self, dialog.exec)
+        workspace_dialog(self, dialog.exec, dialog_instance=dialog)
         kind = (
             "recover_project"
             if dialog.clickedButton() is restore

@@ -222,6 +222,7 @@ def test_error_vocabulary_is_exact() -> None:
         "invalid_payload",
         "object_not_found",
         "operation_failed",
+        "io_capability_unavailable",
         "shm_not_found",
         "shm_invalid_descriptor",
         "worker_busy",

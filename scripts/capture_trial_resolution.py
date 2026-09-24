@@ -14,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 import urllib.parse
-import uuid
 import venv
 import zipfile
 from collections.abc import Iterator, Mapping, Sequence
@@ -75,8 +74,12 @@ try:
         read_manifest,
     )
     from .run_trial_technical_gate import (
+        _CHECK_NAMES as _CURRENT_GATE_CHECK_NAMES,
+    )
+    from .run_trial_technical_gate import (
         GateError as _GateError,
     )
+    from .run_trial_technical_gate import _new_shm_run_prefix
     from .run_trial_technical_gate import (
         gate_environment as _technical_gate_environment,
     )
@@ -86,6 +89,24 @@ try:
     from .run_trial_technical_gate import read_gate_stage as _read_gate_stage
     from .run_trial_technical_gate import (
         technical_gate_command as _technical_gate_command,
+    )
+    from .trial_targets import TrialTargetError as _TrialTargetError
+    from .trial_targets import target_ids as _target_ids
+    from .trial_targets import trial_target as _trial_target
+    from .trial_toolchain import (
+        ToolchainError as _ToolchainError,
+    )
+    from .trial_toolchain import (
+        conda_environment_manager_record as _conda_environment_manager_record,
+    )
+    from .trial_toolchain import (
+        conda_environment_manager_record_from_info as _conda_manager_from_info,
+    )
+    from .trial_toolchain import (
+        conda_subdir as _conda_subdir,
+    )
+    from .trial_toolchain import (
+        fresh_conda_create_command as _fresh_conda_create_command,
     )
     from .verify_public_source import scan_public_checkout
 except ImportError:  # pragma: no cover - direct public-script invocation.
@@ -142,8 +163,12 @@ except ImportError:  # pragma: no cover - direct public-script invocation.
         read_manifest,
     )
     from run_trial_technical_gate import (  # type: ignore[no-redef]
+        _CHECK_NAMES as _CURRENT_GATE_CHECK_NAMES,
+    )
+    from run_trial_technical_gate import (  # type: ignore[no-redef]
         GateError as _GateError,
     )
+    from run_trial_technical_gate import _new_shm_run_prefix
     from run_trial_technical_gate import (  # type: ignore[no-redef]
         gate_environment as _technical_gate_environment,
     )
@@ -155,6 +180,30 @@ except ImportError:  # pragma: no cover - direct public-script invocation.
     )
     from run_trial_technical_gate import (  # type: ignore[no-redef]
         technical_gate_command as _technical_gate_command,
+    )
+    from trial_targets import (  # type: ignore[no-redef]
+        TrialTargetError as _TrialTargetError,
+    )
+    from trial_targets import (
+        target_ids as _target_ids,
+    )
+    from trial_targets import (
+        trial_target as _trial_target,
+    )
+    from trial_toolchain import (  # type: ignore[no-redef]
+        ToolchainError as _ToolchainError,
+    )
+    from trial_toolchain import (
+        conda_environment_manager_record as _conda_environment_manager_record,
+    )
+    from trial_toolchain import (
+        conda_environment_manager_record_from_info as _conda_manager_from_info,
+    )
+    from trial_toolchain import (
+        conda_subdir as _conda_subdir,
+    )
+    from trial_toolchain import (
+        fresh_conda_create_command as _fresh_conda_create_command,
     )
     from verify_public_source import scan_public_checkout  # type: ignore[no-redef]
 
@@ -214,12 +263,20 @@ _PYTHON_VERSION = re.compile(r"3\.12\.[0-9]+")
 _GLIBC_VERSION = re.compile(r"[0-9]+\.[0-9]+")
 _DEBIAN_VERSION = re.compile(r"[0-9][A-Za-z0-9.+:~_-]*")
 _MACHINES = frozenset({"x86_64", "aarch64", "arm64"})
-_TARGETS = frozenset({"wsl2-ubuntu24", "macos15-arm64"})
 _REQUIRED_OS_ID = "ubuntu"
 _REQUIRED_OS_VERSION = "24.04"
 _STUDIO_NAME = "gwexpy-studio"
 _OS_RUNTIME_MANAGER = "dpkg"
 _OS_RUNTIME_PACKAGES = ("libegl1", "libgl1")
+_SCHEMA4_OS_RUNTIME_PACKAGES = (
+    "libegl1",
+    "libgl1",
+    "libfontconfig1",
+    "libglib2.0-0t64",
+    "libdbus-1-3",
+    "libxkbcommon0",
+    "libzstd1",
+)
 _OS_RUNTIME_STATUS = "installed"
 _DPKG_ARCHITECTURES = {"x86_64": "amd64", "aarch64": "arm64"}
 _REQUIRED_QT_GL_LIBRARIES = ("libEGL.so.1", "libGL.so.1")
@@ -239,6 +296,131 @@ _GENERATED_WHEEL_MEMBERS = (
 )
 _GATE_SCRIPT_GIT_PATH = "scripts/run_trial_technical_gate.py"
 _SEALED_GATE_SCRIPT_NAME = "installed-trial-technical-gate.py"
+_PRODUCER_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "welcome",
+        "sample-availability",
+        "try-sample",
+        "sample-catalog",
+        "sample-inspection",
+        "sample-read",
+        "crop-dialog",
+        "crop",
+        "asd-dialog",
+        "asd",
+        "save-project",
+        "post-save-input",
+        "post-save-crop-dialog",
+        "recovery-checkpoint",
+        "export-reference",
+        "python-export",
+        "intentional-crash",
+    }
+)
+_CONSUMER_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "project-reopen",
+        "recovery-review",
+        "recovery-candidate-visible",
+        "recovery-candidate-selected",
+        "unsaved-project-visible",
+        "unsaved-project-discarded",
+        "recovery-review-trigger",
+        "recovery-review-requested",
+        "recovery-list-dispatch-requested",
+        "recovery-list-dispatch-accepted",
+        "recovery-list-result-received",
+        "recovery-list-result-succeeded",
+        "recovery-candidates-received",
+        "recovery-restored",
+        "data-restore",
+        "recovery-consumption",
+        "restored-project-save",
+        "worker-exit",
+        "complete",
+        "recovery-dialog-boundary-entered",
+        "recovery-dialog-instance-bound",
+        "recovery-dialog-poll-entered",
+        "recovery-dialog-button-resolved",
+        "recovery-dialog-modal-returned",
+    }
+)
+_NORMAL_GATE_STAGES = frozenset(
+    {
+        "bootstrap",
+        "launcher",
+        "welcome",
+        "worker-ready",
+        "io-catalog",
+        "io-catalog-ready",
+        "io-inspection",
+        "io-read",
+        "io-read-settled",
+        "save-project",
+        "save-after-refusal",
+        "close-project",
+        "empty-workspace",
+        "open-project",
+        "reopened-project",
+        "restore-review",
+        "restore-review-handled",
+        "restored-project",
+        "restored-state-settled",
+        "io-unavailable",
+        "io-refusal",
+        "worker-exit",
+        "complete",
+    }
+)
+_ALLOWED_GATE_STAGE_PAIRS = frozenset(
+    {
+        *(f"producer/{stage}" for stage in _PRODUCER_GATE_STAGES),
+        *(f"consumer/{stage}" for stage in _CONSUMER_GATE_STAGES),
+        *(f"normal/{stage}" for stage in _NORMAL_GATE_STAGES),
+    }
+)
+_SCHEMA4_COMMON_FIELDS = {
+    "architecture",
+    "build_id",
+    "constraints_sha256",
+    "environment_manager",
+    "phase_one",
+    "phase_replay",
+    "phase_two",
+    "pip_version",
+    "python_version",
+    "runtime_artifacts",
+    "schema",
+    "source_manifest_sha256",
+    "source_sha",
+    "staging_manifest_sha256",
+    "target_id",
+    "technical_gate",
+    "version",
+    "wheel",
+}
+_SCHEMA4_LINUX_FIELDS = _SCHEMA4_COMMON_FIELDS | {
+    "glibc_version",
+    "os_id",
+    "os_runtime",
+    "os_version",
+}
+_SCHEMA4_MACOS_FIELDS = _SCHEMA4_COMMON_FIELDS | {"platform"}
+_CONDA_MANAGER_FIELDS = {
+    "kind",
+    "requested_specs",
+    "subdir",
+    "version",
+}
+_CONDA_PACKAGE_FIELDS = {"build", "name", "version"}
+_CONDA_PACKAGE_NAME = re.compile(r"_?[a-z0-9][a-z0-9_.+-]*")
+_CONDA_BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]*")
+_CONDA_CHANNEL = "conda-forge"
+_CONDA_PYPI_MARKERS = ("pypi", "pypi", "pypi_0")
 
 
 def load_trial_artifact(
@@ -361,6 +543,8 @@ def run_installed_technical_gate(
     checkout_root: Path,
     work_root: Path,
     native_qt: bool = False,
+    replay_python: Path | None = None,
+    legacy: bool = False,
 ) -> dict[str, object]:
     """Run the normal launcher path from phase two through a sealed FD only."""
     try:
@@ -377,7 +561,7 @@ def run_installed_technical_gate(
         environment = _technical_gate_environment(
             work_root,
             _subprocess_environment(),
-            f"gwexpy-gate-{uuid.uuid4().hex}-",
+            _new_shm_run_prefix(),
             native_qt=native_qt,
         )
         completed = subprocess.run(
@@ -387,6 +571,9 @@ def run_installed_technical_gate(
                 checkout_root=checkout_root,
                 work_root=work_root,
                 result_path=result_path,
+                replay_python=replay_python,
+                native_qt=native_qt,
+                legacy=legacy,
             ),
             cwd=work_root,
             capture_output=True,
@@ -400,7 +587,7 @@ def run_installed_technical_gate(
         raise ResolutionError("installed technical gate could not run") from exc
     if completed.returncode != 0:
         try:
-            stage = _read_gate_stage(work_root)
+            stage = _collect_gate_stage(work_root)
         except _GateError:
             raise ResolutionError("installed technical gate failed") from None
         raise ResolutionError(f"installed technical gate failed at {stage}")
@@ -413,6 +600,14 @@ def run_installed_technical_gate(
     if result["status"] != "passed":
         raise ResolutionError("installed technical gate failed")
     return result
+
+
+def _collect_gate_stage(work_root: Path) -> str:
+    """Collect only a canonical stage pair from the sealed gate workspace."""
+    stage = _read_gate_stage(work_root)
+    if stage not in _ALLOWED_GATE_STAGE_PAIRS:
+        raise _GateError("technical-gate diagnostic stage is invalid")
+    return stage
 
 
 def verify_capture_checkout(checkout: Path, artifact: TrialArtifact) -> None:
@@ -462,6 +657,41 @@ def pip_install_command(
         command.extend(("-c", str(constraints_path)))
     command.append(str(wheel))
     return tuple(command)
+
+
+def pip_runtime_install_command(
+    *,
+    python: Path,
+    package_names: Sequence[str],
+    constraints: Path,
+    report_path: Path,
+) -> tuple[str, ...]:
+    """Install only the phase-one runtime closure into the replay prefix."""
+    names: list[str] = []
+    for package_name in package_names:
+        if not isinstance(package_name, str):
+            raise ResolutionError("replay package name is invalid")
+        normalized = _normalized_package_name(package_name)
+        if normalized == _STUDIO_NAME:
+            raise ResolutionError("replay prefix must not install Studio")
+        names.append(normalized)
+    if not names or len(names) != len(set(names)):
+        raise ResolutionError("replay package set is invalid")
+    return (
+        str(python),
+        "-m",
+        "pip",
+        "install",
+        "--isolated",
+        "--no-input",
+        "--only-binary=:all:",
+        "--disable-pip-version-check",
+        "--report",
+        str(report_path),
+        "-c",
+        str(constraints),
+        *sorted(names),
+    )
 
 
 def build_resolution_projection(
@@ -574,6 +804,401 @@ def build_resolution_projection(
             raise ResolutionError("installed technical gate identity disagrees")
         projection["technical_gate"] = validated_gate
     return projection
+
+
+def build_conda_resolution_projection(
+    *,
+    artifact: TrialArtifact,
+    target_id: str,
+    machine: str,
+    environment_manager: Mapping[str, object],
+    python_version: str,
+    pip_version: str,
+    phase_one_report: Mapping[str, object],
+    phase_one_inspect: Mapping[str, object],
+    phase_two_report: Mapping[str, object],
+    phase_two_inspect: Mapping[str, object],
+    phase_one_conda_packages: Sequence[Mapping[str, object]],
+    phase_two_conda_packages: Sequence[Mapping[str, object]],
+    phase_replay_report: Mapping[str, object] | None = None,
+    phase_replay_inspect: Mapping[str, object] | None = None,
+    phase_replay_conda_packages: Sequence[Mapping[str, object]] | None = None,
+    phase_one_import_isolation: Mapping[str, object] | None = None,
+    phase_two_import_isolation: Mapping[str, object] | None = None,
+    phase_replay_import_isolation: Mapping[str, object] | None = None,
+    os_id: str | None = None,
+    os_version: str | None = None,
+    glibc_version: str | None = None,
+    os_runtime: Mapping[str, object] | None = None,
+    platform_record: Mapping[str, object] | None = None,
+    phase_one_report_bytes: bytes | None = None,
+    phase_one_inspect_bytes: bytes | None = None,
+    phase_two_report_bytes: bytes | None = None,
+    phase_two_inspect_bytes: bytes | None = None,
+    phase_replay_report_bytes: bytes | None = None,
+    phase_replay_inspect_bytes: bytes | None = None,
+    technical_gate: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Make schema-4 evidence from two Studio phases and one replay phase.
+
+    The schema-2 and schema-3 builders above intentionally remain the
+    historical read/write paths for old artifacts.  This builder is the only
+    path that emits schema 4 and therefore requires an explicit closed target,
+    architecture, and conda manager record.
+    """
+    try:
+        target = _trial_target(target_id)
+        target.require_architecture(machine)
+        expected_subdir = _conda_subdir(target_id, machine)
+    except (_TrialTargetError, _ToolchainError) as exc:
+        raise ResolutionError("resolution target or architecture is invalid") from exc
+    try:
+        _require_exact_keys(
+            environment_manager,
+            _CONDA_MANAGER_FIELDS,
+            "conda environment manager",
+        )
+    except ResolutionError:
+        raise
+    manager_version = _required_version(
+        environment_manager.get("version"), "conda version"
+    )
+    try:
+        expected_manager = _conda_environment_manager_record(
+            target_id=target_id,
+            architecture=machine,
+            version=manager_version,
+        )
+    except _ToolchainError as exc:
+        raise ResolutionError("conda environment manager is invalid") from exc
+    if dict(environment_manager) != expected_manager:
+        raise ResolutionError(
+            f"conda environment manager does not match target {target_id!r}"
+        )
+    if environment_manager.get("subdir") != expected_subdir:
+        raise ResolutionError("conda subdir does not match target")
+    if _PYTHON_VERSION.fullmatch(python_version) is None:
+        raise ResolutionError("Python version must be CPython 3.12 with a patch")
+    pip_version = _required_version(pip_version, "pip version")
+
+    phase_one_conda_packages = validate_conda_package_records(
+        phase_one_conda_packages,
+        python_version=python_version,
+        pip_version=pip_version,
+    )
+    phase_two_conda_packages = validate_conda_package_records(
+        phase_two_conda_packages,
+        python_version=python_version,
+        pip_version=pip_version,
+    )
+    if any(
+        value is None
+        for value in (
+            phase_replay_report,
+            phase_replay_inspect,
+            phase_replay_conda_packages,
+            phase_one_import_isolation,
+            phase_two_import_isolation,
+            phase_replay_import_isolation,
+        )
+    ):
+        raise ResolutionError(
+            "schema-4 resolution requires the complete replay phase evidence"
+        )
+    assert phase_replay_report is not None
+    assert phase_replay_inspect is not None
+    assert phase_replay_conda_packages is not None
+    assert phase_one_import_isolation is not None
+    assert phase_two_import_isolation is not None
+    assert phase_replay_import_isolation is not None
+    phase_one = {
+        **_phase_projection(
+            report=phase_one_report,
+            inspect=phase_one_inspect,
+            artifact=artifact,
+            expected_pip_version=pip_version,
+            report_bytes=phase_one_report_bytes,
+            inspect_bytes=phase_one_inspect_bytes,
+        ),
+        "conda_packages": phase_one_conda_packages,
+    }
+    phase_two = {
+        **_phase_projection(
+            report=phase_two_report,
+            inspect=phase_two_inspect,
+            artifact=artifact,
+            expected_pip_version=pip_version,
+            report_bytes=phase_two_report_bytes,
+            inspect_bytes=phase_two_inspect_bytes,
+        ),
+        "conda_packages": phase_two_conda_packages,
+    }
+    phase_replay_conda_packages = validate_conda_package_records(
+        phase_replay_conda_packages,
+        python_version=python_version,
+        pip_version=pip_version,
+    )
+    phase_replay = {
+        **_phase_projection(
+            report=phase_replay_report,
+            inspect=phase_replay_inspect,
+            artifact=artifact,
+            expected_pip_version=pip_version,
+            report_bytes=phase_replay_report_bytes,
+            inspect_bytes=phase_replay_inspect_bytes,
+            require_studio=False,
+        ),
+        "conda_packages": phase_replay_conda_packages,
+    }
+    phase_import_isolation = {
+        "phase_one": validate_import_isolation(
+            phase_one_import_isolation, require_studio=True
+        ),
+        "phase_two": validate_import_isolation(
+            phase_two_import_isolation, require_studio=True
+        ),
+        "phase_replay": validate_import_isolation(
+            phase_replay_import_isolation, require_studio=False
+        ),
+    }
+    phase_one["import_isolation"] = phase_import_isolation["phase_one"]
+    phase_two["import_isolation"] = phase_import_isolation["phase_two"]
+    phase_replay["import_isolation"] = phase_import_isolation["phase_replay"]
+    if phase_one["artifacts"] != phase_two["artifacts"]:
+        raise ResolutionError("fresh conda re-install selected a different pip closure")
+    if phase_one["conda_packages"] != phase_two["conda_packages"]:
+        raise ResolutionError(
+            "fresh conda re-install selected a different conda package closure"
+        )
+    if phase_replay["artifacts"] != [
+        item for item in phase_one["artifacts"] if item["name"] != _STUDIO_NAME
+    ]:
+        raise ResolutionError("replay phase selected a different pip runtime closure")
+    first_replay_inspect = phase_replay["inspect"]
+    first_runtime_inspect = [
+        item
+        for item in phase_one["inspect"]["installed"]
+        if item["name"] != _STUDIO_NAME
+    ]
+    if first_replay_inspect["installed"] != first_runtime_inspect:
+        raise ResolutionError("replay phase has a different pip environment")
+    if phase_replay["conda_packages"] != phase_one["conda_packages"]:
+        raise ResolutionError("replay phase selected a different conda closure")
+    first_inspect = phase_one.get("inspect")
+    second_inspect = phase_two.get("inspect")
+    if (
+        not isinstance(first_inspect, Mapping)
+        or not isinstance(second_inspect, Mapping)
+        or first_inspect.get("installed") != second_inspect.get("installed")
+    ):
+        raise ResolutionError("fresh conda re-install has a different pip environment")
+    artifacts = phase_one["artifacts"]
+    if not isinstance(artifacts, list):
+        raise ResolutionError("phase one artifacts are invalid")
+    runtime = [item for item in artifacts if item["name"] != _STUDIO_NAME]
+    constraints = "".join(f"{item['name']}=={item['version']}\n" for item in runtime)
+    projection: dict[str, object] = {
+        "architecture": machine,
+        "build_id": artifact.build_id,
+        "constraints_sha256": _sha256(constraints.encode("utf-8")),
+        "environment_manager": dict(environment_manager),
+        "phase_one": phase_one,
+        "phase_replay": phase_replay,
+        "phase_two": phase_two,
+        "pip_version": pip_version,
+        "python_version": python_version,
+        "runtime_artifacts": runtime,
+        "schema": 4,
+        "source_manifest_sha256": artifact.source_manifest_sha256,
+        "source_sha": artifact.source_sha,
+        "staging_manifest_sha256": artifact.staging_manifest_sha256,
+        "target_id": target.id,
+        "technical_gate": None,
+        "version": artifact.version,
+        "wheel": {
+            "filename": artifact.wheel_filename,
+            "sha256": artifact.wheel_sha256,
+        },
+    }
+    if target.os_id == "macos":
+        if (
+            os_id is not None
+            or os_version is not None
+            or glibc_version is not None
+            or os_runtime is not None
+            or platform_record is None
+        ):
+            raise ResolutionError("macOS resolution requires native platform evidence")
+        platform_value = _validate_schema4_macos_platform(platform_record, machine)
+        projection["platform"] = platform_value
+    else:
+        if (
+            os_id != target.os_id
+            or os_version != target.os_version
+            or glibc_version is None
+            or os_runtime is None
+            or platform_record is not None
+        ):
+            raise ResolutionError("resolution OS evidence does not match target")
+        if _GLIBC_VERSION.fullmatch(glibc_version) is None:
+            raise ResolutionError("glibc version is invalid")
+        projection.update(
+            {
+                "glibc_version": glibc_version,
+                "os_id": os_id,
+                "os_runtime": validate_os_runtime(
+                    os_runtime,
+                    machine=machine,
+                    package_names=_SCHEMA4_OS_RUNTIME_PACKAGES,
+                ),
+                "os_version": os_version,
+            }
+    )
+    if technical_gate is None:
+        raise ResolutionError(
+            "schema-4 resolution requires the installed technical gate"
+        )
+    try:
+        validated_gate = _read_gate_result(_canonical_json(technical_gate))
+    except _GateError as exc:
+        raise ResolutionError("installed technical gate result is invalid") from exc
+    if (
+        validated_gate["schema"] != 3
+        or set(validated_gate["checks"]) != set(_CURRENT_GATE_CHECK_NAMES)
+        or validated_gate["status"] != "passed"
+    ):
+        raise ResolutionError(
+            "schema-4 resolution requires the current technical-gate checks"
+        )
+    installed = validated_gate["installed"]
+    if (
+        validated_gate["architecture"] != machine
+        or validated_gate["python_version"] != python_version
+        or not isinstance(installed, Mapping)
+        or installed.get("build_id") != artifact.build_id
+        or installed.get("source_sha") != artifact.source_sha
+        or installed.get("version") != artifact.version
+    ):
+        raise ResolutionError("installed technical gate identity disagrees")
+    projection["technical_gate"] = validated_gate
+    return projection
+
+
+def read_resolution_document(
+    value: bytes | Path | Mapping[str, object],
+) -> dict[str, object]:
+    """Read schema 2/3 legacy evidence or validate a schema-4 document.
+
+    Legacy documents are deliberately returned without normalization or
+    rewriting.  They remain readable for historical bundle verification but
+    cannot be emitted by :func:`build_conda_resolution_projection`.
+    """
+    if isinstance(value, bytes):
+        document = _parse_json_bytes(value, "resolution")
+    elif isinstance(value, Path):
+        document = _read_json_object(value, "resolution")
+    elif isinstance(value, Mapping):
+        document = dict(value)
+    else:
+        raise ResolutionError("resolution must be JSON bytes, a path, or an object")
+    schema = document.get("schema")
+    if schema in {2, 3}:
+        return document
+    if schema != 4:
+        raise ResolutionError("resolution schema is unsupported")
+    target_id = document.get("target_id")
+    if not isinstance(target_id, str):
+        raise ResolutionError("schema-4 resolution target is invalid")
+    try:
+        target = _trial_target(target_id)
+    except _TrialTargetError as exc:
+        raise ResolutionError("schema-4 resolution target is invalid") from exc
+    expected_fields = (
+        _SCHEMA4_MACOS_FIELDS if target.os_id == "macos" else _SCHEMA4_LINUX_FIELDS
+    )
+    if set(document) != expected_fields:
+        raise ResolutionError("schema-4 resolution fields are invalid")
+    return document
+
+
+def _conda_package_records(
+    packages: Sequence[Mapping[str, object]], *, require_base: bool = False
+) -> list[dict[str, str]]:
+    """Validate and canonically sort the conda package closure records."""
+    if isinstance(packages, (str, bytes)):
+        raise ResolutionError("conda package closure is invalid")
+    records: list[dict[str, str]] = []
+    for package in packages:
+        if not isinstance(package, Mapping) or set(package) != _CONDA_PACKAGE_FIELDS:
+            raise ResolutionError("conda package record is invalid")
+        name = _required_string(package.get("name"), "conda package name")
+        if _CONDA_PACKAGE_NAME.fullmatch(name) is None:
+            raise ResolutionError("conda package name is invalid")
+        version = _required_version(package.get("version"), "conda package version")
+        build = package.get("build")
+        if not isinstance(build, str) or _CONDA_BUILD.fullmatch(build) is None:
+            raise ResolutionError("conda package build is invalid")
+        records.append({"build": build, "name": name, "version": version})
+    records.sort(key=lambda item: item["name"].encode("utf-8"))
+    if not records:
+        raise ResolutionError("conda package closure is empty")
+    if len({item["name"] for item in records}) != len(records):
+        raise ResolutionError("conda package closure contains a package more than once")
+    if require_base and not {"python", "pip"} <= {
+        item["name"] for item in records
+    }:
+        raise ResolutionError("conda package closure must contain python and pip")
+    return records
+
+
+def validate_conda_package_records(
+    value: object,
+    *,
+    python_version: str | None = None,
+    pip_version: str | None = None,
+) -> list[dict[str, str]]:
+    """Validate persisted conda package identities without retaining extra fields."""
+    if not isinstance(value, list):
+        raise ResolutionError("conda package closure is invalid")
+    if (python_version is None) != (pip_version is None):
+        raise ResolutionError("conda package top-level versions are incomplete")
+    records = _conda_package_records(value, require_base=True)
+    if python_version is None or pip_version is None:
+        return records
+    by_name = {item["name"]: item["version"] for item in records}
+    if by_name["python"] != python_version:
+        raise ResolutionError("conda python package version disagrees with resolution")
+    if by_name["pip"] != pip_version:
+        raise ResolutionError("conda pip package version disagrees with resolution")
+    return records
+
+
+def _validate_schema4_macos_platform(
+    value: Mapping[str, object], machine: str
+) -> dict[str, object]:
+    if machine != "arm64":
+        raise ResolutionError("macOS resolution requires ARM64")
+    _require_exact_keys(
+        value,
+        {
+            "architecture",
+            "id",
+            "qt_opengl_context",
+            "qt_platform",
+            "qt_version",
+            "version",
+        },
+        "macOS platform",
+    )
+    return macos_platform_record(
+        machine=_required_string(value.get("architecture"), "macOS architecture"),
+        os_version=_required_string(value.get("version"), "macOS version"),
+        qt_platform=_required_string(value.get("qt_platform"), "Qt platform"),
+        qt_version=_required_string(value.get("qt_version"), "Qt version"),
+        opengl_context=_required_bool(
+            value.get("qt_opengl_context"), "Qt OpenGL context"
+        ),
+    )
 
 
 def macos_platform_record(
@@ -797,27 +1422,50 @@ def capture_trial_resolution(
     checkout_root: Path,
     output_directory: Path,
     trial_target_id: str | None = None,
+    environment_backend: str | None = None,
+    conda_executable: Path | None = None,
 ) -> tuple[Path, Path]:
-    """Resolve and re-install an exact runtime closure in two fresh venvs."""
+    """Resolve an exact legacy venv or explicitly selected conda runtime closure."""
+    if environment_backend not in {None, "conda"}:
+        raise ResolutionError("resolution environment backend must be conda")
+    if (environment_backend is None) != (conda_executable is None):
+        raise ResolutionError("conda backend requires an explicit conda executable")
+    if trial_target_id is not None and environment_backend != "conda":
+        raise ResolutionError("new target resolution requires conda backend")
+    if trial_target_id is None and environment_backend == "conda":
+        raise ResolutionError("conda backend requires an explicit trial target")
+    target_name = trial_target_id or "wsl2-ubuntu24"
+    try:
+        target = _trial_target(target_name)
+    except _TrialTargetError as exc:
+        raise ResolutionError("unsupported trial target") from exc
     artifact = load_trial_artifact(
         wheel=wheel,
         trial_manifest=trial_manifest,
         source_manifest=source_manifest,
         staging_manifest=staging_manifest,
     )
-    if trial_target_id is not None and trial_target_id not in _TARGETS:
-        raise ResolutionError("unsupported trial target")
     machine = _machine()
-    if trial_target_id == "macos15-arm64":
+    try:
+        target.require_architecture(machine)
+    except _TrialTargetError as exc:
+        raise ResolutionError("resolution target architecture is unsupported") from exc
+    expected_subdir: str | None = None
+    if environment_backend == "conda":
+        try:
+            expected_subdir = _conda_subdir(target_name, machine)
+        except _ToolchainError as exc:
+            raise ResolutionError("resolution target conda subdir is invalid") from exc
+    if target.os_id == "macos":
         if sys.platform != "darwin" or machine != "arm64":
             raise ResolutionError("macOS target requires a native Darwin ARM64 host")
         glibc_version = None
         os_release = None
     else:
         if sys.platform != "linux" or machine not in {"x86_64", "aarch64"}:
-            raise ResolutionError("Ubuntu target requires a native Linux host")
+            raise ResolutionError("Linux target requires a native Linux host")
         glibc_version = _glibc_version()
-        os_release = _ubuntu_release()
+        os_release = _target_os_release(target.os_id)
     try:
         checkout = _trial_source_root(checkout_root)
         verify_capture_checkout(checkout, artifact)
@@ -825,18 +1473,39 @@ def capture_trial_resolution(
         temporary_parent = _trial_temporary_parent(checkout)
     except _TrialBuildError as exc:
         raise ResolutionError("resolution output location is unsafe") from exc
-    os_runtime = (
-        None
-        if trial_target_id == "macos15-arm64"
-        else capture_os_runtime(machine, cwd=checkout)
-    )
+    if target.os_id == "macos":
+        os_runtime = None
+    elif environment_backend == "conda":
+        os_runtime = capture_os_runtime(
+            machine,
+            cwd=checkout,
+            package_names=_SCHEMA4_OS_RUNTIME_PACKAGES,
+        )
+    else:
+        os_runtime = capture_os_runtime(machine, cwd=checkout)
     with tempfile.TemporaryDirectory(
         prefix=".gwexpy-studio-resolution-",
         dir=temporary_parent,
     ) as name:
         workspace = Path(name)
         sealed_wheel = _seal_wheel(workspace, artifact)
-        phase_one = _fresh_phase(workspace / "phase-one")
+        conda_manager: dict[str, object] | None = None
+        if environment_backend == "conda":
+            assert conda_executable is not None
+            conda_manager = _conda_environment_manager(
+                conda_executable=conda_executable,
+                target_id=target_name,
+                architecture=machine,
+                cwd=workspace,
+            )
+            phase_one = _fresh_conda_phase(
+                workspace / "phase-one",
+                conda_executable=conda_executable,
+                target_id=target_name,
+                architecture=machine,
+            )
+        else:
+            phase_one = _fresh_phase(workspace / "phase-one")
         phase_one_report_path = workspace / "phase-one-report.json"
         _run(
             pip_install_command(
@@ -856,15 +1525,44 @@ def capture_trial_resolution(
         phase_one_inspect = _parse_json_bytes(
             phase_one_inspect_bytes, "phase-one inspect"
         )
+        phase_one_import_isolation: dict[str, object] | None = None
+        if environment_backend == "conda":
+            phase_one_import_isolation = _verify_runtime_imports(
+                phase_one.python,
+                cwd=workspace,
+                checkout_root=checkout,
+                require_studio=True,
+            )
+        phase_one_conda_packages = (
+            _conda_phase_packages(
+                conda_executable=conda_executable,
+                prefix=workspace / "phase-one",
+                cwd=workspace,
+                expected_subdir=expected_subdir,
+            )
+            if environment_backend == "conda"
+            else None
+        )
         constraints_bytes = runtime_constraints(
             phase_one_report, artifact=artifact
         ).encode("utf-8")
         constraints_path = workspace / _constraints_filename(
-            machine, trial_target_id or "wsl2-ubuntu24"
+            machine, target_name
         )
         constraints_path.write_bytes(constraints_bytes)
 
-        phase_two = _fresh_phase(workspace / "phase-two")
+        if environment_backend == "conda":
+            assert conda_executable is not None
+            assert phase_one_conda_packages is not None
+            phase_two = _fresh_conda_phase(
+                workspace / "phase-two",
+                conda_executable=conda_executable,
+                target_id=target_name,
+                architecture=machine,
+                package_records=phase_one_conda_packages,
+            )
+        else:
+            phase_two = _fresh_phase(workspace / "phase-two")
         phase_two_report_path = workspace / "phase-two-report.json"
         _run(
             pip_install_command(
@@ -884,6 +1582,93 @@ def capture_trial_resolution(
         phase_two_inspect = _parse_json_bytes(
             phase_two_inspect_bytes, "phase-two inspect"
         )
+        phase_two_import_isolation: dict[str, object] | None = None
+        if environment_backend == "conda":
+            phase_two_import_isolation = _verify_runtime_imports(
+                phase_two.python,
+                cwd=workspace,
+                checkout_root=checkout,
+                require_studio=True,
+            )
+        phase_two_conda_packages = (
+            _conda_phase_packages(
+                conda_executable=conda_executable,
+                prefix=workspace / "phase-two",
+                cwd=workspace,
+                expected_subdir=expected_subdir,
+            )
+            if environment_backend == "conda"
+            else None
+        )
+        replay_phase: _FreshPhase | None = None
+        replay_report: Mapping[str, object] | None = None
+        replay_inspect: Mapping[str, object] | None = None
+        replay_report_bytes: bytes | None = None
+        replay_inspect_bytes: bytes | None = None
+        replay_conda_packages: list[dict[str, str]] | None = None
+        replay_import_isolation: dict[str, object] | None = None
+        if environment_backend == "conda":
+            assert conda_executable is not None
+            assert phase_one_conda_packages is not None
+            replay_phase = _fresh_conda_phase(
+                workspace / "phase-replay",
+                conda_executable=conda_executable,
+                target_id=target_name,
+                architecture=machine,
+                package_records=phase_one_conda_packages,
+            )
+            replay_report_path = workspace / "phase-replay-report.json"
+            replay_names = tuple(
+                item.name
+                for item in _selected_artifacts(phase_one_report, artifact=artifact)
+                if item.name != _STUDIO_NAME
+            )
+            _run(
+                pip_runtime_install_command(
+                    python=replay_phase.python,
+                    package_names=replay_names,
+                    constraints=constraints_path,
+                    report_path=replay_report_path,
+                ),
+                cwd=workspace,
+            )
+            _run_pip_check(replay_phase.python, workspace)
+            replay_report_bytes = _read_regular_bytes(
+                replay_report_path, "phase-replay pip report"
+            )
+            replay_inspect_bytes = _pip_inspect(replay_phase.python, workspace)
+            replay_report = _parse_json_bytes(
+                replay_report_bytes, "phase-replay report"
+            )
+            replay_inspect = _parse_json_bytes(
+                replay_inspect_bytes, "phase-replay inspect"
+            )
+            replay_installed = _inspect_packages(replay_inspect)
+            phase_one_runtime = [
+                item
+                for item in _inspect_packages(phase_one_inspect)
+                if item["name"] != _STUDIO_NAME
+            ]
+            if replay_installed != phase_one_runtime:
+                raise ResolutionError(
+                    "replay prefix has a different runtime pip environment"
+                )
+            replay_conda_packages = _conda_phase_packages(
+                conda_executable=conda_executable,
+                prefix=workspace / "phase-replay",
+                cwd=workspace,
+                expected_subdir=expected_subdir,
+            )
+            if replay_conda_packages != phase_one_conda_packages:
+                raise ResolutionError(
+                    "replay prefix has a different conda package closure"
+                )
+            replay_import_isolation = _verify_runtime_imports(
+                replay_phase.python,
+                cwd=workspace,
+                checkout_root=checkout,
+                require_studio=False,
+            )
         with seal_technical_gate_script(
             checkout=checkout,
             source_sha=artifact.source_sha,
@@ -894,11 +1679,91 @@ def capture_trial_resolution(
                 gate_fd=gate_fd,
                 checkout_root=checkout,
                 work_root=workspace,
-                native_qt=trial_target_id == "macos15-arm64",
+                native_qt=target.os_id == "macos",
+                replay_python=replay_phase.python if replay_phase is not None else None,
+                legacy=environment_backend is None,
             )
         pip_version = _pip_version(phase_two.python, workspace)
         python_version = _python_version(phase_two.python, workspace)
-        if trial_target_id == "macos15-arm64":
+        if environment_backend == "conda":
+            assert conda_manager is not None
+            assert phase_one_conda_packages is not None
+            assert phase_two_conda_packages is not None
+            assert phase_one_import_isolation is not None
+            assert phase_two_import_isolation is not None
+            assert replay_report is not None
+            assert replay_inspect is not None
+            assert replay_report_bytes is not None
+            assert replay_inspect_bytes is not None
+            assert replay_conda_packages is not None
+            assert replay_import_isolation is not None
+            if target.os_id == "macos":
+                projection = build_conda_resolution_projection(
+                    artifact=artifact,
+                    target_id=target_name,
+                    machine=machine,
+                    environment_manager=conda_manager,
+                    python_version=python_version,
+                    pip_version=pip_version,
+                    phase_one_report=phase_one_report,
+                    phase_one_inspect=phase_one_inspect,
+                    phase_two_report=phase_two_report,
+                    phase_two_inspect=phase_two_inspect,
+                    phase_one_conda_packages=phase_one_conda_packages,
+                    phase_two_conda_packages=phase_two_conda_packages,
+                    phase_replay_report=replay_report,
+                    phase_replay_inspect=replay_inspect,
+                    phase_replay_conda_packages=replay_conda_packages,
+                    phase_one_import_isolation=phase_one_import_isolation,
+                    phase_two_import_isolation=phase_two_import_isolation,
+                    phase_replay_import_isolation=replay_import_isolation,
+                    phase_one_report_bytes=phase_one_report_bytes,
+                    phase_one_inspect_bytes=phase_one_inspect_bytes,
+                    phase_two_report_bytes=phase_two_report_bytes,
+                    phase_two_inspect_bytes=phase_two_inspect_bytes,
+                    phase_replay_report_bytes=replay_report_bytes,
+                    phase_replay_inspect_bytes=replay_inspect_bytes,
+                    technical_gate=technical_gate,
+                    platform_record=capture_macos_platform(
+                        phase_two.python, cwd=workspace
+                    ),
+                )
+            else:
+                assert glibc_version is not None
+                assert os_runtime is not None
+                assert os_release is not None
+                projection = build_conda_resolution_projection(
+                    artifact=artifact,
+                    target_id=target_name,
+                    machine=machine,
+                    environment_manager=conda_manager,
+                    python_version=python_version,
+                    pip_version=pip_version,
+                    phase_one_report=phase_one_report,
+                    phase_one_inspect=phase_one_inspect,
+                    phase_two_report=phase_two_report,
+                    phase_two_inspect=phase_two_inspect,
+                    phase_one_conda_packages=phase_one_conda_packages,
+                    phase_two_conda_packages=phase_two_conda_packages,
+                    phase_replay_report=replay_report,
+                    phase_replay_inspect=replay_inspect,
+                    phase_replay_conda_packages=replay_conda_packages,
+                    phase_one_import_isolation=phase_one_import_isolation,
+                    phase_two_import_isolation=phase_two_import_isolation,
+                    phase_replay_import_isolation=replay_import_isolation,
+                    os_id=os_release[0],
+                    os_version=os_release[1],
+                    glibc_version=glibc_version,
+                    os_runtime=os_runtime,
+                    phase_one_report_bytes=phase_one_report_bytes,
+                    phase_one_inspect_bytes=phase_one_inspect_bytes,
+                    phase_two_report_bytes=phase_two_report_bytes,
+                    phase_two_inspect_bytes=phase_two_inspect_bytes,
+                    phase_replay_report_bytes=replay_report_bytes,
+                    phase_replay_inspect_bytes=replay_inspect_bytes,
+                    technical_gate=technical_gate,
+                )
+        elif target_name == "macos15-arm64":
             projection = build_macos_resolution_projection(
                 artifact=artifact,
                 python_version=python_version,
@@ -939,7 +1804,6 @@ def capture_trial_resolution(
             )
         if projection["constraints_sha256"] != _sha256(constraints_bytes):
             raise ResolutionError("generated constraints digest does not match closure")
-        target_name = trial_target_id or "wsl2-ubuntu24"
         constraints_name = _constraints_filename(machine, target_name)
         resolution_name = _resolution_filename(machine, target_name)
         _publish_evidence(
@@ -1110,6 +1974,151 @@ def _fresh_phase(directory: Path) -> _FreshPhase:
     return _FreshPhase(python=python)
 
 
+def _fresh_conda_phase(
+    directory: Path,
+    *,
+    conda_executable: Path,
+    target_id: str,
+    architecture: str,
+    package_records: Sequence[Mapping[str, object]] | None = None,
+) -> _FreshPhase:
+    """Create one fresh target-bound conda prefix without a venv fallback."""
+    if directory.exists() or directory.is_symlink():
+        raise ResolutionError("fresh conda environment directory already exists")
+    try:
+        command = _fresh_conda_create_command(
+            conda_executable=conda_executable,
+            target_id=target_id,
+            architecture=architecture,
+            prefix=directory,
+            package_records=package_records,
+        )
+        _run(command, cwd=directory.parent)
+    except (_ToolchainError, ResolutionError) as exc:
+        raise ResolutionError("fresh conda environment creation failed") from exc
+    python = directory / "bin" / "python"
+    if not python.is_file():
+        raise ResolutionError("fresh conda environment has no Python executable")
+    try:
+        resolved_python = python.resolve(strict=True)
+        resolved_prefix = directory.resolve(strict=True)
+        resolved_python.relative_to(resolved_prefix)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ResolutionError(
+            "fresh conda Python executable must resolve inside prefix"
+        ) from exc
+    try:
+        python_status = resolved_python.stat()
+    except OSError as exc:
+        raise ResolutionError(
+            "fresh conda Python executable cannot be inspected"
+        ) from exc
+    if not stat.S_ISREG(python_status.st_mode) or not os.access(
+        resolved_python, os.X_OK
+    ):
+        raise ResolutionError("fresh conda environment has no executable Python")
+    _verify_python_isolation(python, cwd=directory.parent)
+    return _FreshPhase(python=python)
+
+
+def _conda_environment_manager(
+    *, conda_executable: Path, target_id: str, architecture: str, cwd: Path
+) -> dict[str, object]:
+    """Read the fixed conda executable's version and target platform."""
+    try:
+        completed = subprocess.run(
+            (str(conda_executable), "info", "--json"),
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            text=False,
+            timeout=120,
+            env=_subprocess_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResolutionError("conda info query failed") from exc
+    if completed.returncode != 0 or not isinstance(completed.stdout, bytes):
+        raise ResolutionError("conda info query failed")
+    info = _parse_json_bytes(completed.stdout, "conda info")
+    try:
+        return _conda_manager_from_info(
+            target_id=target_id,
+            architecture=architecture,
+            info=info,
+        )
+    except _ToolchainError as exc:
+        raise ResolutionError("conda info does not match the target") from exc
+
+
+def _conda_phase_packages(
+    *, conda_executable: Path, prefix: Path, cwd: Path, expected_subdir: str
+) -> list[dict[str, str]]:
+    """Capture only the path-free conda package identity for one prefix."""
+    if not isinstance(expected_subdir, str) or not expected_subdir:
+        raise ResolutionError("expected conda subdir is invalid")
+    try:
+        completed = subprocess.run(
+            (
+                str(conda_executable),
+                "list",
+                "--json",
+                "--no-pip",
+                "--prefix",
+                str(prefix),
+            ),
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            text=False,
+            timeout=120,
+            env=_subprocess_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResolutionError("conda package list query failed") from exc
+    if completed.returncode != 0 or not isinstance(completed.stdout, bytes):
+        raise ResolutionError("conda package list query failed")
+    value = _parse_json_value(completed.stdout, "conda package list")
+    if not isinstance(value, list):
+        raise ResolutionError("conda package list is not an array")
+    projected: list[dict[str, object]] = []
+    for package in value:
+        if not isinstance(package, Mapping):
+            raise ResolutionError("conda package list record is invalid")
+        channel = package.get("channel")
+        platform_name = package.get("platform")
+        build_string = package.get("build_string")
+        if not all(
+            isinstance(marker, str)
+            for marker in (channel, platform_name, build_string)
+        ):
+            raise ResolutionError("conda package list record markers are invalid")
+        name = package.get("name")
+        version = package.get("version")
+        if (
+            not isinstance(name, str)
+            or _CONDA_PACKAGE_NAME.fullmatch(name) is None
+            or not isinstance(version, str)
+            or _VERSION.fullmatch(version) is None
+        ):
+            raise ResolutionError("conda package list record identity is invalid")
+        if (channel, platform_name, build_string) == _CONDA_PYPI_MARKERS:
+            continue
+        if build_string == "pypi_0":
+            raise ResolutionError("conda package list record markers are inconsistent")
+        if channel != _CONDA_CHANNEL:
+            raise ResolutionError("conda package list record channel is invalid")
+        if platform_name not in {expected_subdir, "noarch"}:
+            raise ResolutionError("conda package list record platform is invalid")
+        projected.append(
+            {
+                "build": build_string,
+                "name": name,
+                "version": version,
+            }
+        )
+    return _conda_package_records(projected, require_base=True)
+
+
 def _phase_projection(
     *,
     report: Mapping[str, object],
@@ -1118,7 +2127,16 @@ def _phase_projection(
     expected_pip_version: str,
     report_bytes: bytes | None,
     inspect_bytes: bytes | None,
+    require_studio: bool = True,
 ) -> dict[str, object]:
+    if report_bytes is not None and _parse_json_bytes(
+        report_bytes, "pip report bytes"
+    ) != dict(report):
+        raise ResolutionError("pip report bytes disagree with parsed evidence")
+    if inspect_bytes is not None and _parse_json_bytes(
+        inspect_bytes, "pip inspect bytes"
+    ) != dict(inspect):
+        raise ResolutionError("pip inspect bytes disagree with parsed evidence")
     report_pip_version = _required_version(
         _object_value(report, "pip_version", "pip report"), "pip report version"
     )
@@ -1132,7 +2150,9 @@ def _phase_projection(
         raise ResolutionError(
             "pip evidence version disagrees with the phase interpreter"
         )
-    artifacts = _selected_artifacts(report, artifact=artifact)
+    artifacts = _selected_artifacts(
+        report, artifact=artifact, require_studio=require_studio
+    )
     installed = _inspect_packages(inspect)
     expected_packages = {(item.name, item.version) for item in artifacts}
     installed_packages = {(item["name"], item["version"]) for item in installed}
@@ -1151,7 +2171,10 @@ def _phase_projection(
 
 
 def _selected_artifacts(
-    report: Mapping[str, object], *, artifact: TrialArtifact
+    report: Mapping[str, object],
+    *,
+    artifact: TrialArtifact,
+    require_studio: bool = True,
 ) -> tuple[RuntimeArtifact, ...]:
     _validate_pip_schema(report, "pip report")
     install = _object_value(report, "install", "pip report")
@@ -1205,14 +2228,21 @@ def _selected_artifacts(
     if len(names) != len(set(names)):
         raise ResolutionError("pip report selected a package more than once")
     studio = next((item for item in selected if item.name == _STUDIO_NAME), None)
-    if studio is None:
-        raise ResolutionError("pip report omitted the trial Studio wheel")
-    if (
-        studio.filename != artifact.wheel_filename
-        or studio.sha256 != artifact.wheel_sha256
-        or studio.version != artifact.version
-    ):
-        raise ResolutionError("pip report Studio wheel does not match trial identity")
+    if require_studio:
+        if studio is None:
+            raise ResolutionError("pip report omitted the trial Studio wheel")
+        if (
+            studio.filename != artifact.wheel_filename
+            or studio.sha256 != artifact.wheel_sha256
+            or studio.version != artifact.version
+        ):
+            raise ResolutionError(
+                "pip report Studio wheel does not match trial identity"
+            )
+    elif studio is not None:
+        raise ResolutionError(
+            "replay pip report must not contain the trial Studio wheel"
+        )
     if not all(item.filename.endswith(".whl") for item in selected):
         raise ResolutionError("pip report selected a non-wheel artifact")
     return tuple(selected)
@@ -1408,6 +2438,13 @@ def _read_json_object(path: Path, label: str) -> dict[str, object]:
 
 
 def _parse_json_bytes(content: bytes, label: str) -> dict[str, object]:
+    value = _parse_json_value(content, label)
+    if not isinstance(value, dict):
+        raise ResolutionError(f"{label} must be a JSON object")
+    return value
+
+
+def _parse_json_value(content: bytes, label: str) -> object:
     try:
         value = json.loads(
             content.decode("utf-8"),
@@ -1416,8 +2453,6 @@ def _parse_json_bytes(content: bytes, label: str) -> dict[str, object]:
         )
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise ResolutionError(f"{label} is not valid JSON") from exc
-    if not isinstance(value, dict):
-        raise ResolutionError(f"{label} must be a JSON object")
     return value
 
 
@@ -1546,16 +2581,25 @@ def _canonical_json(value: object) -> bytes:
     )
 
 
-def capture_os_runtime(machine: str, *, cwd: Path) -> dict[str, object]:
+def capture_os_runtime(
+    machine: str,
+    *,
+    cwd: Path,
+    package_names: Sequence[str] = _OS_RUNTIME_PACKAGES,
+) -> dict[str, object]:
     """Capture the direct OS packages and SONAMEs required by Qt's GL runtime."""
     expected_architecture = _dpkg_architecture(machine)
+    package_names = tuple(package_names)
+    if not package_names or len(package_names) != len(set(package_names)):
+        raise ResolutionError("Qt GL runtime package list is invalid")
+    queried_names = tuple(f"{name}:{expected_architecture}" for name in package_names)
     try:
         completed = subprocess.run(
             (
                 "dpkg-query",
                 "--show",
                 f"--showformat={_DPKG_QUERY_FORMAT}",
-                *_OS_RUNTIME_PACKAGES,
+                *queried_names,
             ),
             cwd=cwd,
             capture_output=True,
@@ -1571,21 +2615,28 @@ def capture_os_runtime(machine: str, *, cwd: Path) -> dict[str, object]:
 
     packages: list[dict[str, str]] = []
     lines = completed.stdout.splitlines()
-    if len(lines) != len(_OS_RUNTIME_PACKAGES):
-        raise ResolutionError("Qt GL runtime package query is incomplete")
-    for expected_name, line in zip(_OS_RUNTIME_PACKAGES, lines, strict=True):
+    records: dict[str, tuple[str, str, str]] = {}
+    for line in lines:
         fields = line.split("\t")
         if len(fields) != 4:
             raise ResolutionError("Qt GL runtime package query is malformed")
         status, name, version, architecture = fields
+        if name not in package_names or architecture != expected_architecture:
+            raise ResolutionError("Qt GL runtime package identity is invalid")
+        if name in records:
+            raise ResolutionError("Qt GL runtime package identity is invalid")
         if status != "ii ":
             raise ResolutionError("Qt GL runtime package is not installed")
-        if name != expected_name or architecture != expected_architecture:
-            raise ResolutionError("Qt GL runtime package identity is invalid")
+        records[name] = (status, version, architecture)
+
+    if set(records) != set(package_names):
+        raise ResolutionError("Qt GL runtime package query is incomplete")
+    for expected_name in package_names:
+        _status, version, architecture = records[expected_name]
         packages.append(
             {
                 "architecture": architecture,
-                "name": name,
+                "name": expected_name,
                 "status": _OS_RUNTIME_STATUS,
                 "version": _required_debian_version(
                     version, "Qt GL runtime package version"
@@ -1600,6 +2651,7 @@ def capture_os_runtime(machine: str, *, cwd: Path) -> dict[str, object]:
             "required_libraries": list(_REQUIRED_QT_GL_LIBRARIES),
         },
         machine=machine,
+        package_names=package_names,
     )
     for library in _REQUIRED_QT_GL_LIBRARIES:
         try:
@@ -1609,7 +2661,12 @@ def capture_os_runtime(machine: str, *, cwd: Path) -> dict[str, object]:
     return runtime
 
 
-def validate_os_runtime(value: object, *, machine: str) -> dict[str, object]:
+def validate_os_runtime(
+    value: object,
+    *,
+    machine: str,
+    package_names: Sequence[str] = _OS_RUNTIME_PACKAGES,
+) -> dict[str, object]:
     """Validate the path-free direct Qt GL runtime evidence for one architecture."""
     if not isinstance(value, Mapping):
         raise ResolutionError("Qt GL runtime evidence is invalid")
@@ -1620,15 +2677,18 @@ def validate_os_runtime(value: object, *, machine: str) -> dict[str, object]:
     )
     if value.get("manager") != _OS_RUNTIME_MANAGER:
         raise ResolutionError("Qt GL runtime package manager is invalid")
+    package_names = tuple(package_names)
+    if not package_names or len(package_names) != len(set(package_names)):
+        raise ResolutionError("Qt GL runtime package list is invalid")
     expected_architecture = _dpkg_architecture(machine)
     packages_value = value.get("packages")
     if not isinstance(packages_value, list) or len(packages_value) != len(
-        _OS_RUNTIME_PACKAGES
+        package_names
     ):
         raise ResolutionError("Qt GL runtime packages are invalid")
     packages: list[dict[str, str]] = []
     for expected_name, package_value in zip(
-        _OS_RUNTIME_PACKAGES, packages_value, strict=True
+        package_names, packages_value, strict=True
     ):
         if not isinstance(package_value, Mapping):
             raise ResolutionError("Qt GL runtime package is invalid")
@@ -1695,6 +2755,32 @@ def _glibc_version() -> str:
 
 def _ubuntu_release(path: Path = Path("/etc/os-release")) -> tuple[str, str]:
     """Require the release target rather than inferring it from glibc alone."""
+    fields = _read_os_release_fields(path)
+    if (
+        fields.get("ID") != _REQUIRED_OS_ID
+        or fields.get("VERSION_ID") != _REQUIRED_OS_VERSION
+    ):
+        raise ResolutionError("resolution host must be Ubuntu 24.04")
+    return _REQUIRED_OS_ID, _REQUIRED_OS_VERSION
+
+
+def _debian_release(path: Path = Path("/etc/os-release")) -> tuple[str, str]:
+    """Require the Debian 13 target rather than accepting a generic Linux host."""
+    fields = _read_os_release_fields(path)
+    if fields.get("ID") != "debian" or fields.get("VERSION_ID") != "13":
+        raise ResolutionError("resolution host must be Debian 13")
+    return "debian", "13"
+
+
+def _target_os_release(os_id: str) -> tuple[str, str]:
+    if os_id == _REQUIRED_OS_ID:
+        return _ubuntu_release()
+    if os_id == "debian":
+        return _debian_release()
+    raise ResolutionError("resolution target OS is unsupported")
+
+
+def _read_os_release_fields(path: Path) -> dict[str, str]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -1706,12 +2792,7 @@ def _ubuntu_release(path: Path = Path("/etc/os-release")) -> tuple[str, str]:
         name, value = line.split("=", 1)
         if name in {"ID", "VERSION_ID"}:
             fields[name] = value.strip().strip('"')
-    if (
-        fields.get("ID") != _REQUIRED_OS_ID
-        or fields.get("VERSION_ID") != _REQUIRED_OS_VERSION
-    ):
-        raise ResolutionError("resolution host must be Ubuntu 24.04")
-    return _REQUIRED_OS_ID, _REQUIRED_OS_VERSION
+    return fields
 
 
 def _publish_evidence(
@@ -1861,6 +2942,172 @@ def _python_version(python: Path, cwd: Path) -> str:
     return completed.stdout.strip()
 
 
+def _verify_python_isolation(python: Path, *, cwd: Path) -> None:
+    """Reject user-site imports even when the interpreter is a conda Python."""
+    sentinel_name = "gwexpy_trial_user_site_sentinel"
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".gwexpy-user-site-", dir=cwd
+        ) as userbase_name:
+            userbase = Path(userbase_name)
+            site_packages = userbase / "lib" / "python3.12" / "site-packages"
+            site_packages.mkdir(parents=True)
+            (site_packages / f"{sentinel_name}.py").write_text(
+                "sentinel = 'ambient-user-site'\n", encoding="ascii"
+            )
+            environment = _subprocess_environment()
+            # Deliberately expose a benign fake userbase to prove the child
+            # cannot import it; the production environment removes this key.
+            environment["PYTHONUSERBASE"] = str(userbase)
+            completed = subprocess.run(
+                (
+                    str(python),
+                    "-c",
+                    "import importlib.util, json, site, sys; "
+                    "print(json.dumps({"
+                    "'enable_user_site': site.ENABLE_USER_SITE, "
+                    "'no_user_site': sys.flags.no_user_site, "
+                    f"'sentinel': importlib.util.find_spec('{sentinel_name}') "
+                    "is not None"
+                    "}, sort_keys=True))",
+                ),
+                cwd=cwd,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=60,
+                env=environment,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResolutionError("fresh conda Python isolation probe failed") from exc
+    if completed.returncode != 0:
+        raise ResolutionError("fresh conda Python isolation probe failed")
+    try:
+        evidence = json.loads(completed.stdout)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ResolutionError("fresh conda Python isolation probe is invalid") from exc
+    if evidence != {
+        "enable_user_site": False,
+        "no_user_site": 1,
+        "sentinel": False,
+    }:
+        raise ResolutionError("fresh conda Python user-site isolation is invalid")
+
+
+def _verify_runtime_imports(
+    python: Path,
+    *,
+    cwd: Path,
+    checkout_root: Path,
+    require_studio: bool,
+) -> dict[str, object]:
+    """Prove imports resolve from the fresh prefix, not ambient checkout state."""
+    prefix = python.resolve(strict=True).parent.parent
+    checkout = checkout_root.resolve(strict=True)
+    required = ("gwexpy_studio", "gwexpy", "numpy", "PySide6")
+    if not require_studio:
+        required = tuple(name for name in required if name != "gwexpy_studio")
+    code = (
+        "import importlib, importlib.util, json, os, pathlib, sys\n"
+        f"_required = {required!r}\n"
+        "_studio = importlib.util.find_spec('gwexpy_studio')\n"
+        "_modules = {}\n"
+        "for _name in _required:\n"
+        "    _module = importlib.import_module(_name)\n"
+        "    _path = getattr(_module, '__file__', None)\n"
+        "    if not isinstance(_path, str):\n"
+        "        raise RuntimeError('runtime import has no file')\n"
+        "    _modules[_name] = str(pathlib.Path(_path).resolve())\n"
+        "print(json.dumps({'python': list(sys.version_info[:2]),\n"
+        "'no_user_site': sys.flags.no_user_site,\n"
+        "'pythonpath': 'PYTHONPATH' in os.environ,\n"
+        "'studio': _studio is not None,\n"
+        "'modules': _modules,\n"
+        "'sys_path': [str(pathlib.Path(_item or '.').resolve()) "
+        "for _item in sys.path]},\n"
+        "sort_keys=True))\n"
+    )
+    try:
+        completed = subprocess.run(
+            (str(python), "-I", "-c", code),
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=120,
+            env=_subprocess_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ResolutionError("fresh runtime import probe failed") from exc
+    if completed.returncode != 0:
+        raise ResolutionError("fresh runtime import probe failed")
+    try:
+        evidence = json.loads(completed.stdout)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ResolutionError("fresh runtime import probe is invalid") from exc
+    if not isinstance(evidence, Mapping):
+        raise ResolutionError("fresh runtime import probe is invalid")
+    if evidence.get("python") != [3, 12] or evidence.get("no_user_site") != 1:
+        raise ResolutionError("fresh runtime Python identity is invalid")
+    if evidence.get("pythonpath") is not False:
+        raise ResolutionError("fresh runtime PYTHONPATH isolation is invalid")
+    if evidence.get("studio") is not require_studio:
+        raise ResolutionError("fresh runtime Studio visibility is invalid")
+    modules = evidence.get("modules")
+    sys_path = evidence.get("sys_path")
+    if not isinstance(modules, Mapping) or not isinstance(sys_path, list):
+        raise ResolutionError("fresh runtime import probe is invalid")
+    for value in sys_path:
+        if not isinstance(value, str):
+            raise ResolutionError("fresh runtime sys.path is invalid")
+        try:
+            Path(value).relative_to(checkout)
+        except ValueError:
+            pass
+        else:
+            raise ResolutionError("fresh runtime sys.path reaches the checkout")
+    for name in required:
+        value = modules.get(name)
+        if not isinstance(value, str):
+            raise ResolutionError("fresh runtime module origin is invalid")
+        try:
+            Path(value).relative_to(prefix)
+        except ValueError as exc:
+            raise ResolutionError(
+                "fresh runtime module did not import from the prefix"
+            ) from exc
+    return {
+        "checkout_on_sys_path": False,
+        "imports": list(required),
+        "no_user_site": True,
+        "python": "3.12",
+        "pythonpath": False,
+        "studio_visible": require_studio,
+    }
+
+
+def validate_import_isolation(
+    value: object, *, require_studio: bool
+) -> dict[str, object]:
+    """Validate bounded import-isolation evidence without retaining paths."""
+    if not isinstance(value, Mapping):
+        raise ResolutionError("runtime import isolation evidence is invalid")
+    required = ["gwexpy", "numpy", "PySide6"]
+    if require_studio:
+        required.insert(0, "gwexpy_studio")
+    expected = {
+        "checkout_on_sys_path": False,
+        "imports": required,
+        "no_user_site": True,
+        "python": "3.12",
+        "pythonpath": False,
+        "studio_visible": require_studio,
+    }
+    if dict(value) != expected:
+        raise ResolutionError("runtime import isolation evidence is invalid")
+    return expected
+
+
 def _subprocess_environment() -> dict[str, str]:
     environment = os.environ.copy()
     for key in tuple(environment):
@@ -1868,32 +3115,46 @@ def _subprocess_environment() -> dict[str, str]:
             "CONDA_DEFAULT_ENV",
             "CONDA_PREFIX",
             "PYTHONHOME",
+            "PYTHONUSERBASE",
             "PYTHONPATH",
             "VIRTUAL_ENV",
         } or key.startswith("PIP_"):
             environment.pop(key, None)
+    # Conda leaves Python's user-site import path enabled by default.  Keep
+    # ambient packages from shadowing a freshly constructed trial prefix.
+    environment["PYTHONNOUSERSITE"] = "1"
     return environment
 
 
 def _constraints_filename(machine: str, target_id: str = "wsl2-ubuntu24") -> str:
-    if target_id == "wsl2-ubuntu24" and machine in {"x86_64", "aarch64"}:
-        return f"constraints-ubuntu24-{machine}.txt"
-    if target_id == "macos15-arm64" and machine == "arm64":
-        return "constraints-macos15-arm64.txt"
-    raise ResolutionError("resolution target architecture is unsupported")
+    try:
+        return _trial_target(target_id).constraints_filename(machine)
+    except _TrialTargetError as exc:
+        raise ResolutionError("resolution target architecture is unsupported") from exc
 
 
 def _resolution_filename(machine: str, target_id: str = "wsl2-ubuntu24") -> str:
-    if target_id == "wsl2-ubuntu24" and machine in {"x86_64", "aarch64"}:
-        return f"resolution-ubuntu24-{machine}.json"
-    if target_id == "macos15-arm64" and machine == "arm64":
-        return "resolution-macos15-arm64.json"
-    raise ResolutionError("resolution target architecture is unsupported")
+    try:
+        return _trial_target(target_id).resolution_filename(machine)
+    except _TrialTargetError as exc:
+        raise ResolutionError("resolution target architecture is unsupported") from exc
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trial-target", choices=("wsl2-ubuntu24", "macos15-arm64"))
+    parser.add_argument("--trial-target", choices=_target_ids())
+    parser.add_argument(
+        "--backend",
+        choices=("conda",),
+        help="Explicit environment backend for new target resolution captures.",
+    )
+    parser.add_argument(
+        "--conda",
+        "--conda-executable",
+        dest="conda_executable",
+        type=Path,
+        help="Conda executable used for fresh target environments.",
+    )
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--trial-manifest", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
@@ -1915,6 +3176,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkout_root=arguments.checkout,
             output_directory=arguments.output,
             trial_target_id=arguments.trial_target,
+            environment_backend=arguments.backend,
+            conda_executable=arguments.conda_executable,
         )
     except ResolutionError as exc:
         print(f"capture_trial_resolution: error: {exc}", file=sys.stderr)

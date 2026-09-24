@@ -618,12 +618,41 @@ def _assert_output_parent_path_matches_descriptor(
         os.close(current_descriptor)
 
 
+def _fd_path_without_proc(descriptor: int) -> str:
+    """Resolve one open fd through fcntl F_GETPATH (Darwin portability).
+
+    Linux resolves retained descriptors through /proc/self/fd. That
+    directory does not exist on macOS, where fcntl F_GETPATH is the
+    documented fd-to-path operation. Opening /dev/fd/N again is not a
+    substitute here: this helper must return the real directory path
+    string, not another descriptor.
+    """
+    import fcntl
+
+    getpath = getattr(fcntl, "F_GETPATH", None)
+    if getpath is None:
+        raise OSError(38, "fd-to-path resolution is unavailable")
+    # fcntl.fcntl returns the bytes the OS wrote into the argument buffer;
+    # it does not mutate a bytearray in place.
+    raw = fcntl.fcntl(descriptor, getpath, b"\x00" * 1024)
+    if not isinstance(raw, bytes):
+        raise OSError(22, "fd-to-path resolution did not return a path")
+    return raw.split(b"\x00", 1)[0].decode("utf-8")
+
+
 def _descriptor_path(descriptor: int, label: str) -> Path:
     """Resolve a retained directory descriptor without trusting its old pathname."""
     try:
         target = os.readlink(f"/proc/self/fd/{descriptor}")
-    except OSError as exc:
-        raise TrialBuildError(f"cannot resolve {label} safely") from exc
+    except OSError:
+        try:
+            target = _fd_path_without_proc(descriptor)
+        except (OSError, UnicodeError) as exc:
+            raise TrialBuildError(f"cannot resolve {label} safely") from exc
+    if not target:
+        # An empty resolution must never fall through: Path("").resolve()
+        # would silently return the current working directory.
+        raise TrialBuildError(f"cannot resolve {label} safely")
     if target.endswith(" (deleted)"):
         raise TrialBuildError(f"{label} was deleted during publication")
     try:

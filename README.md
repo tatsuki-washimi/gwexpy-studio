@@ -14,24 +14,51 @@ The [installation guide](docs/installation.md) takes you from either a validated
 Use a platform Quick Start only when you need the detailed qualification or diagnostic record bundled with a release.
 
 - For a validated trial build, download the matching ZIP and checksum, then choose one platform section in the installation guide.
-- For this source checkout, create a Python 3.12 virtual environment and run python -m pip install ..
+- For this source checkout, create a Python 3.12 virtual environment and run `python -m pip install .`.
 
 The trial route uses a prebuilt wheel and qualified constraints.
 The source route resolves the package dependencies for development or local evaluation.
 
 ## Trial distribution
 
-Invited participants receive one explicitly shared GitHub prerelease link.
+The trial is distributed as a target-specific ZIP and a matching outer checksum
+sidecar.
 
-Download the ZIP and checksum sidecar with the same Build ID, verify both the outer and inner checksums, and then continue with the matching platform section in the installation guide.
+The candidate documents cover `ubuntu24-x86_64`, `debian13-x86_64`,
+`wsl2-ubuntu24`, and `macos15-arm64`.
 
-The currently published prerelease is limited to native Ubuntu 24.04 x86_64 with conda Python 3.12.
-WSL2 and macOS are available only when the matching asset is included in the same Release and has passed qualification.
+The presence of a guide does not mean that its target is published or qualified.
+Use only the verified Release explicitly named by the sender.
+
+Download the ZIP and checksum sidecar with the same Build ID.
+Verify both the outer and inner checksums, then continue with the platform section in the [installation guide](docs/installation.md) or the Quick Start for the target named by the sender.
+
+Participants need conda with Python 3.12, but do not need Git, a source
+checkout, an editable install, or a GitHub account.
+
+Use the Quick Start for the target named by the sender.
+It checks the exact ZIP, wheel, and constraints files supplied in that bundle,
+creates a dedicated conda environment, and keeps the operating system Python
+unchanged.
+
+The target guides are under [docs/trial](docs/trial).
+After publication, use the external distribution list to confirm the current
+Release and the OS version actually tested.
+
+The ZIP contains the wheel, constraints, checksums, build identity, target
+Quick Start, and Japanese feedback form.
+
+Do not use a bundle on another OS, CPU architecture, native or WSL mode, or
+desktop environment.
 
 Git, a source checkout, an editable install, and PyPI are not part of the trial route.
-Do not replace the trial wheel install with python -m pip install ., change its constraints, or build a dependency from source.
+Do not replace the trial wheel install with `python -m pip install .`, change its constraints, or build a dependency from source.
 
-## First five minutes
+The old Ubuntu reference artifact remains separate from this four-target trial.
+Its schema 3 tag and assets are read-only compatibility material and do not
+represent a newly qualified target.
+
+## Basic workflow
 
 After installation, follow this sequence:
 
@@ -80,3 +107,5 @@ The source is [MIT licensed](LICENSE).
 Contributors who intentionally want a development environment should read the [installation guide](docs/installation.md) and [development guide](docs/development.md).
 
 The public trial contract is in [docs/release/0.1.0a1-trial-readiness.md](docs/release/0.1.0a1-trial-readiness.md).
+
+Feedback instructions are included in each bundle.

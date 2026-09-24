@@ -9,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from gwexpy_studio.errors import PrototypeNotImplementedError
+from gwexpy_studio.errors import CodedStudioError, PrototypeNotImplementedError
+from gwexpy_studio.ops.io_capabilities import IOCapabilityError
 from gwexpy_studio.worker import service as service_module
 from gwexpy_studio.worker.service import worker_main
 
@@ -23,6 +24,23 @@ def _assert_sentinel(error: PrototypeNotImplementedError) -> None:
     assert type(error) is PrototypeNotImplementedError
     assert error.code == _FOUNDATION_CODE
     assert error.owner == _SERVICE_OWNER
+
+
+def test_worker_preserves_declared_io_capability_error_code() -> None:
+    """A declared I/O refusal survives the worker error-code allowlist."""
+    assert (
+        service_module._safe_worker_error_code(
+            IOCapabilityError(), default="operation_failed"
+        )
+        == "io_capability_unavailable"
+    )
+    assert (
+        service_module._safe_worker_error_code(
+            CodedStudioError("unknown", code="not_registered"),
+            default="operation_failed",
+        )
+        == "operation_failed"
+    )
 
 
 def _request(request_id: str, message_type: str, payload: dict[str, Any]) -> bytes:
