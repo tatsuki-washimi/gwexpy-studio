@@ -1,5 +1,8 @@
 # GWexpy Studio macOS trial quick start
 
+This page is for participants using the verified macOS trial ZIP.
+For a source checkout, use the [source installation guide](../../installation.md) instead; do not mix the two routes.
+
 This guide applies only to the `macos15-arm64` prerelease on an Apple Silicon Mac running macOS 15 or later.
 Do not use it on an Intel Mac, WSL2, or Linux.
 

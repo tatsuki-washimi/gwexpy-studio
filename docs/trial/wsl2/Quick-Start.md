@@ -1,5 +1,8 @@
 # GWexpy Studio WSL2 trial quick start
 
+This page is for participants using the verified WSL2 trial ZIP.
+For a source checkout, use the [source installation guide](../../installation.md) instead; a source install is not a workaround for a failed WSL2 preflight.
+
 This guide is for the `wsl2-ubuntu24` prerelease on Windows 11 with Ubuntu 24.04
 on WSL2 and WSLg. It runs as a Linux GUI in WSL2, not as a native Windows
 product. The bundle covers x86_64 and ARM64 Windows systems with matching
@@ -123,7 +126,9 @@ libraries = (
     "libEGL.so.1", "libGL.so.1", "libfontconfig.so.1", "libglib-2.0.so.0",
     "libdbus-1.so.3", "libxkbcommon.so.0", "libzstd.so.1", "libX11-xcb.so.1",
     "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
-    "libxcb-keysyms.so.1", "libxcb-randr.so.0", "libxcb-render-util.so.0",
+    "libxcb-keysyms.so.1",
+    "libxcb-randr.so.0",
+    "libxcb-render-util.so.0",
     "libxcb-shape.so.0", "libxcb-shm.so.0", "libxcb-sync.so.1",
     "libxcb-xfixes.so.0", "libxcb-xkb.so.1", "libxkbcommon-x11.so.0",
     "libSM.so.6", "libICE.so.6", "libwayland-client.so.0",

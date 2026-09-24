@@ -1,5 +1,8 @@
 # GWexpy Studio WSL2試用版クイックスタート
 
+このページは、検証済みWSL2試用版ZIPを使う参加者向けです。
+source checkoutから実行または開発する場合は、[source導入ガイド](../../installation.ja.md)を使います。WSL2のpreflightに失敗した場合の回避策としてsource installを使いません。
+
 この手順は、Windows 11上のUbuntu 24.04 WSL2とWSLgで、Linux GUIとして
 `wsl2-ubuntu24` prereleaseを使うためのものです。Windows native版ではありません。
 x86_64とARM64の両方を対象にします。Windows側とWSL2側は同じCPU系列を選びます。
@@ -121,7 +124,9 @@ libraries = (
     "libEGL.so.1", "libGL.so.1", "libfontconfig.so.1", "libglib-2.0.so.0",
     "libdbus-1.so.3", "libxkbcommon.so.0", "libzstd.so.1", "libX11-xcb.so.1",
     "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
-    "libxcb-keysyms.so.1", "libxcb-randr.so.0", "libxcb-render-util.so.0",
+    "libxcb-keysyms.so.1",
+    "libxcb-randr.so.0",
+    "libxcb-render-util.so.0",
     "libxcb-shape.so.0", "libxcb-shm.so.0", "libxcb-sync.so.1",
     "libxcb-xfixes.so.0", "libxcb-xkb.so.1", "libxkbcommon-x11.so.0",
     "libSM.so.6", "libICE.so.6", "libwayland-client.so.0",
