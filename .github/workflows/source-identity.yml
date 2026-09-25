@@ -48,12 +48,11 @@ jobs:
           )
           if not valid:
               sys.exit("source identity inputs are invalid")
-          if os.environ["GITHUB_REF"] != (
-              "refs/heads/" + os.environ["DEFAULT_BRANCH"]
-          ):
-              sys.exit("dispatch source identity verification from the default branch")
+          branch = os.environ["GITHUB_REF"]
+          if branch != "refs/heads/" + os.environ["DEFAULT_BRANCH"] and re.fullmatch(r"refs/heads/candidate/[A-Za-z0-9._/-]+", branch) is None:
+              sys.exit("dispatch source identity verification from default or candidate branch")
           if os.environ["SOURCE_SHA"] != os.environ["GITHUB_SHA"]:
-              sys.exit("source_sha must equal the dispatched default-branch HEAD")
+              sys.exit("source_sha must equal the dispatched branch HEAD")
           PY
 
       # actions/checkout v4.2.2 resolved from the official tag.

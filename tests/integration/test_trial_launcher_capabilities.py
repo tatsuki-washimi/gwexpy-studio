@@ -35,27 +35,30 @@ def _write_trial_assets(root: Path) -> Path:
         encoding="utf-8",
     )
     policy = assets / "io-capabilities.json"
+    from tests.support.trial_io_policy import trial_io_policy_document
+
     policy.write_text(
-        """{
-  "schema_version": 1,
-  "entries": [
-    {"datatype": "TimeSeries", "format": "csv", "direction": "read", "tier": "A"}
-  ]
-}
-""",
-        encoding="utf-8",
+        json.dumps(trial_io_policy_document(), indent=2) + "\n", encoding="utf-8"
     )
     return root / "gwexpy_studio"
 
 
-def _csv_capability(snapshot: object) -> object:
-    """Return the qualified CSV entry while retaining a narrow test assertion."""
+def _assert_trial_capabilities(snapshot: object) -> None:
     from gwexpy_studio.ops.io_capabilities import EffectiveCapabilitySnapshot
+    from tests.support.trial_io_policy import TRIAL_IO_POLICY_PAIRS
 
     assert isinstance(snapshot, EffectiveCapabilitySnapshot)
-    entry = snapshot.capability("TimeSeries", "csv", "read")
-    assert entry is not None
-    return entry
+    for (datatype, format_name), (tier, reason) in TRIAL_IO_POLICY_PAIRS.items():
+        entry = snapshot.capability(datatype, format_name, "read")
+        assert entry is not None, (datatype, format_name)
+        assert entry.tier == tier, entry.document()
+        if tier == "C":
+            assert entry.status == "unavailable", entry.document()
+            assert entry.available is False
+            assert entry.reason == reason
+        else:
+            assert entry.status == "verified", entry.document()
+            assert entry.available is True
 
 
 @pytest.mark.contract("TRT-IO-004")
@@ -82,14 +85,10 @@ def test_trial_launcher_policy_reaches_initial_and_restarted_worker(
             assert os.environ[CAPABILITY_ENVIRONMENT] == str(embedded)
 
             client.start()
-            first = _csv_capability(client.capability_snapshot)
-            assert first.tier == "A"
-            assert first.status == "verified", first.document()
+            _assert_trial_capabilities(client.capability_snapshot)
 
             client.restart()
-            restarted = _csv_capability(client.capability_snapshot)
-            assert restarted.tier == "A"
-            assert restarted.status == "verified", restarted.document()
+            _assert_trial_capabilities(client.capability_snapshot)
     finally:
         client.shutdown()
 

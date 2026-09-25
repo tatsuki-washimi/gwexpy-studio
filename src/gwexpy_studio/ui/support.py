@@ -43,7 +43,7 @@ def quick_start_text() -> str:
         "2. Review the data settings, then load the data.\n"
         "3. Select the loaded time series and choose Operations → Crop.\n"
         "4. Choose Operations → ASD to inspect its spectrum.\n"
-        "5. Choose File → Save Project, then later use Open Project to continue."
+        "5. Choose File → Save, then later use Open Project to continue."
     )
 
 

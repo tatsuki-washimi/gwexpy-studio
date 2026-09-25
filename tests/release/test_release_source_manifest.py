@@ -109,6 +109,42 @@ def test_default_policy_includes_public_gui_trial_tests() -> None:
     assert policy.classify("ROADMAP.md") == "include"
 
 
+def test_default_policy_excludes_private_feedback_from_public_projection(
+    tmp_path: Path,
+) -> None:
+    policy = load_policy(
+        Path(__file__).resolve().parents[2]
+        / "packaging"
+        / "release-source-allowlist.txt"
+    )
+    private_paths = (
+        "docs/feedback/private-issue-template.md",
+        "docs/feedback/process.md",
+        "docs/feedback/intake/example.md",
+    )
+    assert policy.classify("docs/feedback") == "exclude"
+    for path in private_paths:
+        assert policy.classify(path) == "exclude"
+    assert policy.classify("docs/Feedback.ja.md") == "include"
+
+    source = tmp_path / "private-source"
+    _write(source / "docs" / "Feedback.ja.md", "Public feedback guide\n")
+    for path in private_paths:
+        _write(source / path, "Private intake instructions\n")
+    snapshot = tmp_path / "public-snapshot"
+    manifest = export_release_source(
+        source, snapshot, policy, tmp_path / "SOURCE-MANIFEST.json"
+    )
+    assert (
+        (snapshot / "docs" / "Feedback.ja.md").read_text(encoding="utf-8")
+        == "Public feedback guide\n"
+    )
+    assert not (snapshot / "docs" / "feedback").exists()
+    assert not any(
+        entry.path.startswith("docs/feedback/") for entry in manifest.entries
+    )
+
+
 def test_public_source_identity_workflow_verifies_p_without_private_inputs() -> None:
     """The M1 verifier compares M(P) directly without private release data."""
     workflow = (

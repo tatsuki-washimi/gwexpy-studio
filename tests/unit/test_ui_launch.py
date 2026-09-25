@@ -44,18 +44,13 @@ def _write_trial_build_record(
     )
 
 
-def _write_trial_csv_policy(assets: Path) -> Path:
-    """Write the reviewed Tier A CSV policy emitted into a trial wheel."""
+def _write_trial_policy(assets: Path) -> Path:
+    """Write the complete reviewed read policy emitted into a trial wheel."""
+    from tests.support.trial_io_policy import trial_io_policy_document
+
     policy = assets / "io-capabilities.json"
     policy.write_text(
-        """{
-  "schema_version": 1,
-  "entries": [
-    {"datatype": "TimeSeries", "format": "csv", "direction": "read", "tier": "A"}
-  ]
-}
-""",
-        encoding="utf-8",
+        json.dumps(trial_io_policy_document(), indent=2) + "\n", encoding="utf-8"
     )
     return policy
 
@@ -200,7 +195,7 @@ def test_trial_launcher_binds_valid_embedded_identity_to_diagnostics(
     assets = package / "assets"
     assets.mkdir(parents=True)
     _write_trial_build_record(assets)
-    embedded_policy = _write_trial_csv_policy(assets)
+    embedded_policy = _write_trial_policy(assets)
     monkeypatch.setattr(app_module.resources, "files", lambda _package: package)
     _bind_installed_trial_version(monkeypatch, app_module)
     monkeypatch.setenv(CAPABILITY_ENVIRONMENT, "/outside/unreviewed-policy.json")
@@ -236,7 +231,7 @@ def test_trial_launcher_fails_closed_for_mismatched_embedded_identity(
     assets = package / "assets"
     assets.mkdir(parents=True)
     _write_trial_build_record(assets)
-    _write_trial_csv_policy(assets)
+    _write_trial_policy(assets)
     monkeypatch.setattr(app_module.resources, "files", lambda _package: package)
     monkeypatch.setattr(
         app_module,
@@ -280,7 +275,7 @@ def test_trial_launcher_rejects_an_identity_with_an_impossible_build_date(
         build_id="P-abcdef0-20260230-r1-a1",
         version=version,
     )
-    _write_trial_csv_policy(assets)
+    _write_trial_policy(assets)
     monkeypatch.setattr(app_module.resources, "files", lambda _package: package)
     monkeypatch.setattr(
         app_module,
@@ -350,7 +345,7 @@ def test_trial_version_without_embedded_identity_fails_closed(
 def test_trial_launcher_uses_its_embedded_policy_not_an_external_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The installed launcher binds worker startup to the wheel's CSV policy."""
+    """The installed launcher binds worker startup to the wheel's full read policy."""
     import gwexpy_studio.ui.app as app_module
     from gwexpy_studio.ops.io_capabilities import (
         CAPABILITY_ENVIRONMENT,
@@ -362,7 +357,7 @@ def test_trial_launcher_uses_its_embedded_policy_not_an_external_environment(
     assets = package / "assets"
     assets.mkdir(parents=True)
     _write_trial_build_record(assets)
-    embedded_policy = _write_trial_csv_policy(assets)
+    embedded_policy = _write_trial_policy(assets)
     monkeypatch.setattr(app_module.resources, "files", lambda _package: package)
     _bind_installed_trial_version(monkeypatch, app_module)
     monkeypatch.setenv(CAPABILITY_ENVIRONMENT, "/outside/unreviewed-policy.json")
@@ -371,6 +366,15 @@ def test_trial_launcher_uses_its_embedded_policy_not_an_external_environment(
         active = load_capability_manifest(io_classes=KNOWN_IO_CLASSES)
         assert active.mode == "frozen"
         assert active.capability("TimeSeries", "csv", "read").tier == "A"
+        assert len(active.entries) == 13
+        for datatype in (
+            "FrequencySeries",
+            "FrequencySeriesDict",
+            "FrequencySeriesMatrix",
+        ):
+            held = active.capability(datatype, "xml.diaggui", "read")
+            assert held is not None
+            assert (held.tier, held.reason) == ("C", "native_error")
         assert os.environ[CAPABILITY_ENVIRONMENT] == str(embedded_policy)
 
     assert os.environ[CAPABILITY_ENVIRONMENT] == "/outside/unreviewed-policy.json"
@@ -392,7 +396,7 @@ def test_main_binds_trial_policy_before_workspace_startup(
     assets = package / "assets"
     assets.mkdir(parents=True)
     _write_trial_build_record(assets)
-    _write_trial_csv_policy(assets)
+    _write_trial_policy(assets)
     monkeypatch.setattr(app_module.resources, "files", lambda _package: package)
     _bind_installed_trial_version(monkeypatch, app_module)
     monkeypatch.setenv(CAPABILITY_ENVIRONMENT, "/outside/unreviewed-policy.json")
@@ -421,6 +425,7 @@ def test_main_binds_trial_policy_before_workspace_startup(
     for manifest in observed[1:]:
         assert manifest.mode == "frozen"
         assert manifest.capability("TimeSeries", "csv", "read").tier == "A"
+        assert len(manifest.entries) == 13
     assert os.environ[CAPABILITY_ENVIRONMENT] == "/outside/unreviewed-policy.json"
 
 
@@ -535,21 +540,21 @@ def test_main_installs_and_restores_its_logging_lifecycle_around_qt(
     monkeypatch.setattr(
         app_module,
         "make_qt_message_handler",
-        lambda configured_logger: events.append(("make-qt-handler", configured_logger))
-        or qt_handler,
+        lambda configured_logger: (
+            events.append(("make-qt-handler", configured_logger)) or qt_handler
+        ),
     )
     monkeypatch.setattr(
         app_module,
         "qInstallMessageHandler",
-        lambda handler: events.append(("install-qt-handler", handler))
-        or previous_qt_handler,
+        lambda handler: (
+            events.append(("install-qt-handler", handler)) or previous_qt_handler
+        ),
     )
     monkeypatch.setattr(
         app_module,
         "shutdown_studio_logging",
-        lambda *, owned_handlers: events.append(
-            ("shutdown-logger", owned_handlers)
-        ),
+        lambda *, owned_handlers: events.append(("shutdown-logger", owned_handlers)),
     )
     monkeypatch.setattr(
         app_module,

@@ -209,11 +209,9 @@ class DataIOPanel(QDialog):
 
     def request(self) -> dict[str, Any]:
         """Read typed JSON primitives and explicit resource limits from controls."""
-        paths = [
-            line.strip()
-            for line in self.paths_edit.toPlainText().splitlines()
-            if line.strip()
-        ]
+        # Whitespace can be part of a filename. Trimming it could inspect a
+        # different existing file than the one chosen or dropped by the user.
+        paths = [line for line in self.paths_edit.toPlainText().splitlines() if line]
         if not paths:
             raise ValueError("Choose at least one path")
         args = finite_json(self.args_edit.toPlainText())

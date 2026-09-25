@@ -54,6 +54,256 @@ def _activate_manifest(
     return path
 
 
+@pytest.mark.contract("REL-IOC-025")
+@pytest.mark.parametrize(
+    "datatype",
+    ["FrequencySeries", "FrequencySeriesDict", "FrequencySeriesMatrix"],
+)
+def test_diaggui_frequency_routes_remain_fail_closed_until_reader_support_is_verified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, datatype: str
+):
+    """Known GWexpy XML frequency reader errors must not become permission."""
+    from gwexpy_studio.ops.io_capabilities import (
+        load_capability_manifest,
+        probe_effective_capabilities,
+    )
+    from tests.support.trial_io_policy import TRIAL_IO_POLICY_PAIRS
+
+    tier, reason = TRIAL_IO_POLICY_PAIRS[(datatype, "xml.diaggui")]
+    assert (tier, reason) == ("C", "native_error")
+    _activate_manifest(
+        monkeypatch,
+        tmp_path,
+        [_entry(datatype, "xml.diaggui", "read", tier, reason=reason)],
+    )
+
+    class Table(list[dict[str, str]]):
+        colnames = ("Format", "Read", "Write", "Auto-identify")
+
+    class Registry:
+        def get_formats(self, *_args):
+            return Table(
+                [
+                    {
+                        "Format": "xml.diaggui",
+                        "Read": "Yes",
+                        "Write": "No",
+                        "Auto-identify": "No",
+                    }
+                ]
+            )
+
+        def get_reader(self, *_args):
+            return object()
+
+    native = SimpleNamespace(
+        IO_CLASSES=(datatype,),
+        io_class=lambda _datatype: object,
+        _io_registries=lambda: (Registry(),),
+    )
+    snapshot = probe_effective_capabilities(
+        load_capability_manifest(), io_module=native
+    )
+
+    capability = snapshot.capability(datatype, "xml.diaggui", "read")
+    assert capability is not None
+    assert capability.native_available is True
+    assert capability.status == "unavailable"
+    assert capability.available is False
+    assert capability.reason == "native_error"
+
+    from gwexpy_studio.ops import io
+    from gwexpy_studio.ops.io_capabilities import IOCapabilityError
+
+    native_calls: list[object] = []
+
+    class Native:
+        @classmethod
+        def read(cls, source, *args, **kwargs):
+            native_calls.append((source, args, kwargs))
+            return "must-not-read"
+
+    monkeypatch.setattr(io, "io_class", lambda _datatype: Native)
+    with pytest.raises(IOCapabilityError) as raised:
+        io.read_data(datatype, "held-frequency.xml", format="xml.diaggui")
+    assert raised.value.reason == "native_error"
+    assert native_calls == []
+
+
+@pytest.mark.contract("REL-IOC-023")
+@pytest.mark.parametrize("datatype", ["TimeSeries", "TimeSeriesDict"])
+def test_developer_catalog_keeps_gwf_routes_exact_and_recommends_lalframe_first(
+    monkeypatch: pytest.MonkeyPatch, datatype: str
+):
+    """Project exact GWF reader routes while retaining native registry names."""
+    from gwexpy_studio.ops import io
+
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+
+    class Table(list[dict[str, str]]):
+        colnames = ("Format", "Read", "Write", "Auto-identify")
+
+    rows = Table(
+        [
+            {
+                "Format": "lalframe",
+                "Read": "Yes",
+                "Write": "No",
+                "Auto-identify": "No",
+            }
+        ]
+    )
+    readers = {"gwf.lalframe": object(), "gwf": object()}
+
+    class Registry:
+        def get_formats(self, *_args):
+            return rows
+
+        def get_reader(self, format_name, _datatype):
+            if format_name not in readers:
+                raise ValueError(format_name)
+            return readers[format_name]
+
+    monkeypatch.setattr(io, "io_class", lambda _datatype: object)
+    monkeypatch.setattr(io, "_io_registries", lambda: (Registry(),))
+
+    catalog = io.io_catalog(datatype, "read")
+    entries = {item["format"]: item for item in catalog["formats"]}
+
+    assert {"lalframe", "gwf.lalframe", "gwf"} <= set(entries)
+    assert entries["gwf.lalframe"]["read"] is True
+    assert entries["gwf"]["read"] is True
+    assert entries["gwf.lalframe"]["auto_identify"] is False
+    assert entries["gwf"]["auto_identify"] is False
+    assert [item["format"] for item in catalog["formats"][:2]] == [
+        "gwf.lalframe",
+        "gwf",
+    ]
+
+
+@pytest.mark.contract("REL-IOC-024")
+@pytest.mark.parametrize("datatype", ["TimeSeries", "TimeSeriesDict"])
+def test_frozen_probe_resolves_each_gwf_route_independently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, datatype: str
+):
+    """Probe explicit GWF routes when the native catalog labels only lalframe."""
+    from gwexpy_studio.ops.io_capabilities import (
+        load_capability_manifest,
+        probe_effective_capabilities,
+    )
+
+    routes = ("gwf.lalframe", "gwf")
+    _activate_manifest(
+        monkeypatch,
+        tmp_path,
+        [_entry(datatype, route, "read", "A") for route in routes],
+    )
+
+    class Table(list[dict[str, str]]):
+        colnames = ("Format", "Read", "Write", "Auto-identify")
+
+    class Registry:
+        def get_formats(self, *_args):
+            return Table(
+                [
+                    {
+                        "Format": "lalframe",
+                        "Read": "Yes",
+                        "Write": "No",
+                        "Auto-identify": "No",
+                    }
+                ]
+            )
+
+        def get_reader(self, format_name, _datatype):
+            if format_name not in {"lalframe", *routes}:
+                raise ValueError(format_name)
+            return object()
+
+    native = SimpleNamespace(
+        IO_CLASSES=(datatype,),
+        io_class=lambda _datatype: object,
+        _io_registries=lambda: (Registry(),),
+        _GWF_READER_ROUTES=routes,
+    )
+    snapshot = probe_effective_capabilities(
+        load_capability_manifest(), io_module=native
+    )
+
+    for route in routes:
+        capability = snapshot.capability(datatype, route, "read")
+        assert capability is not None
+        assert capability.native_available is True
+        assert capability.available is True
+
+
+@pytest.mark.contract("REL-IOC-030")
+@pytest.mark.parametrize("datatype", ["TimeSeries", "TimeSeriesDict"])
+def test_frozen_catalog_preserves_both_exact_gwf_route_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, datatype: str
+) -> None:
+    """A frozen catalog must not merge route aliases into native lalframe."""
+    from gwexpy_studio.ops import io
+    from gwexpy_studio.ops.io_capabilities import (
+        activate_effective_capability_snapshot,
+        load_capability_manifest,
+        probe_effective_capabilities,
+    )
+
+    routes = ("gwf.lalframe", "gwf")
+    _activate_manifest(
+        monkeypatch,
+        tmp_path,
+        [_entry(datatype, route, "read", "A") for route in routes],
+    )
+
+    class Table(list[dict[str, str]]):
+        colnames = ("Format", "Read", "Write", "Auto-identify")
+
+    class Registry:
+        def get_formats(self, *_args):
+            return Table(
+                [
+                    {
+                        "Format": "lalframe",
+                        "Read": "Yes",
+                        "Write": "No",
+                        "Auto-identify": "No",
+                    }
+                ]
+            )
+
+        def get_reader(self, format_name, _datatype):
+            if format_name not in {"lalframe", *routes}:
+                raise ValueError(format_name)
+            return object()
+
+    registry = Registry()
+    native = SimpleNamespace(
+        IO_CLASSES=(datatype,),
+        io_class=lambda _datatype: object,
+        _io_registries=lambda: (registry,),
+        _GWF_READER_ROUTES=routes,
+    )
+    monkeypatch.setattr(io, "io_class", native.io_class)
+    monkeypatch.setattr(io, "_io_registries", native._io_registries)
+    snapshot = probe_effective_capabilities(
+        load_capability_manifest(), io_module=native
+    )
+    activate_effective_capability_snapshot(snapshot)
+
+    catalog = io.io_catalog(datatype, "read")
+    entries = {item["format"]: item for item in catalog["formats"]}
+
+    assert catalog["capability_mode"] == "frozen"
+    assert {"lalframe", *routes} <= set(entries)
+    for route in routes:
+        assert entries[route]["read"] is True
+        assert entries[route]["auto_identify"] is False
+        assert entries[route]["capabilities"]["read"]["available"] is True
+    assert entries["lalframe"]["format"] == "lalframe"
+
+
 def _qualify_active_manifest(*, extra_read_formats: tuple[str, ...] = ()) -> None:
     """Install a data-free worker snapshot matching the current test manifest."""
     from gwexpy_studio.ops.io_capabilities import (

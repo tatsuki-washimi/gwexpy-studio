@@ -11,6 +11,23 @@ on:
         description: SHA-256 of the verified cross-platform qualification summary.
         required: true
         type: string
+      candidate_branch:
+        description: Reviewed candidate branch used by all four Builds.
+        required: true
+        type: string
+      qualification_summary_base64:
+        description: Base64 of exact canonical summary bytes verified by the operator.
+        required: true
+        type: string
+      physical_summary_base64:
+        description: Base64 of canonical schema-2 physical evidence bound by schema 3.
+        required: true
+        type: string
+      operator_verified_summary:
+        description: Operator separately inspected the exact summary bytes and digest.
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -34,6 +51,7 @@ jobs:
       source_sha: ${{ steps.selected.outputs.source_sha }}
       tag: ${{ steps.selected.outputs.tag }}
       target_id: ${{ steps.selected.outputs.target_id }}
+      build_branch: ${{ steps.selected.outputs.build_branch }}
     steps:
       - name: Validate the dispatch boundary
         shell: bash
@@ -43,11 +61,18 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_REF: ${{ github.ref }}
           QUALIFICATION_SUMMARY_SHA256: ${{ inputs.qualification_summary_sha256 }}
+          QUALIFICATION_SUMMARY_BASE64: ${{ inputs.qualification_summary_base64 }}
+          PHYSICAL_SUMMARY_BASE64: ${{ inputs.physical_summary_base64 }}
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
+          OPERATOR_VERIFIED_SUMMARY: ${{ inputs.operator_verified_summary }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os
           import re
+          import base64
+          import hashlib
+          import json
 
           if re.fullmatch(r"[1-9][0-9]*", os.environ["BUILD_RUN_ID"]) is None:
               raise SystemExit("build_run_id must be a positive workflow run ID")
@@ -57,6 +82,34 @@ jobs:
               raise SystemExit("dispatch commit is not a lowercase Git SHA")
           if os.environ["GITHUB_REF"] != "refs/heads/" + os.environ["DEFAULT_BRANCH"]:
               raise SystemExit("dispatch publication from the default branch")
+          branch = os.environ["CANDIDATE_BRANCH"]
+          if re.fullmatch(r"candidate/[A-Za-z0-9._/-]+", branch) is None or any(part in {"", ".", ".."} for part in branch.split("/")):
+              raise SystemExit("candidate branch is invalid")
+          if not os.environ["QUALIFICATION_SUMMARY_BASE64"]:
+              raise SystemExit("candidate publication requires actual summary bytes")
+          if not os.environ["PHYSICAL_SUMMARY_BASE64"]:
+              raise SystemExit("candidate publication requires physical summary bytes")
+          if os.environ["OPERATOR_VERIFIED_SUMMARY"] != "true":
+              raise SystemExit("operator must verify actual summary bytes and digest")
+          try:
+              raw = base64.b64decode(os.environ["QUALIFICATION_SUMMARY_BASE64"], validate=True)
+              document = json.loads(raw)
+              physical_raw = base64.b64decode(os.environ["PHYSICAL_SUMMARY_BASE64"], validate=True)
+              physical = json.loads(physical_raw)
+          except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+              raise SystemExit("candidate evidence bytes are invalid") from exc
+          if hashlib.sha256(raw).hexdigest() != os.environ["QUALIFICATION_SUMMARY_SHA256"]:
+              raise SystemExit("qualification summary bytes disagree with operator digest")
+          if not isinstance(document, dict) or document.get("schema") != 3 or document.get("status") != "passed" or json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n" != raw:
+              raise SystemExit("qualification summary is not canonical passed schema 3")
+          if document.get("candidate_branch") != branch:
+              raise SystemExit("qualification summary branch differs from selected candidate")
+          if set(document) != {"schema", "candidate_branch", "source_sha", "status", "qualification_summary_sha256", "selected_target_id", "build_run_id", "release_artifact_id", "release_artifact_digest"} or re.fullmatch(r"[0-9a-f]{40}", str(document.get("source_sha"))) is None or re.fullmatch(r"[0-9a-f]{64}", str(document.get("qualification_summary_sha256"))) is None:
+              raise SystemExit("candidate summary fields are invalid")
+          if not isinstance(physical, dict) or physical.get("schema") != 2 or physical.get("status") != "passed" or physical.get("source_sha") != document["source_sha"]:
+              raise SystemExit("physical summary identity is invalid")
+          if json.dumps(physical, sort_keys=True, separators=(",", ":")).encode() + b"\n" != physical_raw or hashlib.sha256(physical_raw).hexdigest() != document["qualification_summary_sha256"]:
+              raise SystemExit("physical summary bytes disagree with schema 3 digest")
           PY
 
       - name: Check out trusted publish controls from P
@@ -98,7 +151,9 @@ jobs:
         env:
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
           CONTROL_SHA: ${{ github.sha }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
+          QUALIFICATION_SUMMARY_BASE64: ${{ inputs.qualification_summary_base64 }}
+          PHYSICAL_SUMMARY_BASE64: ${{ inputs.physical_summary_base64 }}
         run: |
           set -euo pipefail
           python3 - "$RUNNER_TEMP/build-run.json" "$RUNNER_TEMP/build-artifacts.json" "$RUNNER_TEMP/default-head.json" "$GITHUB_OUTPUT" <<'PY'
@@ -113,7 +168,9 @@ jobs:
           default_head = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
           output = Path(sys.argv[4])
           run_id = int(os.environ["BUILD_RUN_ID"])
-          default_branch = os.environ["DEFAULT_BRANCH"]
+          candidate_branch = os.environ["CANDIDATE_BRANCH"]
+          if not candidate_branch:
+              raise SystemExit("candidate branch is required in preflight")
 
           def fail(message: str) -> None:
               raise SystemExit(message)
@@ -130,8 +187,11 @@ jobs:
                   fail("selected run is not Build platform trial")
               if run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success":
                   fail("selected build workflow did not succeed manually")
-              if run.get("head_branch") != default_branch:
-                  fail("selected build did not run on the default branch")
+              repository = run.get("repository")
+              if not isinstance(repository, dict) or repository.get("full_name") != os.environ["GITHUB_REPOSITORY"]:
+                  fail("selected build repository differs from publisher")
+              if run.get("head_branch") != candidate_branch:
+                  fail("selected build did not run on the selected branch")
               source_sha = run.get("head_sha")
               run_number = run.get("run_number")
               run_attempt = run.get("run_attempt")
@@ -165,10 +225,42 @@ jobs:
 
           source_sha, run_number, run_attempt, artifact_id, digest, target_id = verify_selected_build()
           verify_default_head(source_sha)
+          import base64
+          from scripts.verify_publication_groups import read_candidate_qualification_summary
+          summary = read_candidate_qualification_summary(
+              base64.b64decode(os.environ["QUALIFICATION_SUMMARY_BASE64"], validate=True),
+              base64.b64decode(os.environ["PHYSICAL_SUMMARY_BASE64"], validate=True),
+          )
+          if summary["source_sha"] != source_sha or summary["candidate_branch"] != candidate_branch:
+              fail("qualification summary source or branch differs from candidate")
+          if summary["selected_target_id"] != target_id or summary["build_run_id"] != run_id or summary["release_artifact_id"] != artifact_id or summary["release_artifact_digest"] != digest:
+              fail("qualification summary selected Build or artifact differs")
           tag = f"trial-{target_id}-0.1.0a1-p.{source_sha[:7]}-r{run_number}-a{run_attempt}"
           with output.open("a", encoding="utf-8") as stream:
               stream.write(f"source_sha={source_sha}\nartifact_id={artifact_id}\n")
               stream.write(f"artifact_digest={digest}\ntarget_id={target_id}\ntag={tag}\n")
+              stream.write(f"build_branch={candidate_branch}\n")
+          PY
+
+      - name: Requery every candidate Build branch in preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          QUALIFICATION_SUMMARY_BASE64: ${{ inputs.qualification_summary_base64 }}
+          PHYSICAL_SUMMARY_BASE64: ${{ inputs.physical_summary_base64 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import os
+          from scripts.verify_publication_groups import fetch_candidate_build_run_provenance
+
+          fetch_candidate_build_run_provenance(
+              base64.b64decode(os.environ["QUALIFICATION_SUMMARY_BASE64"], validate=True),
+              base64.b64decode(os.environ["PHYSICAL_SUMMARY_BASE64"], validate=True),
+              repository=os.environ["REPOSITORY"],
+          )
           PY
 
       - name: Verify that the target tag and release are still absent
@@ -258,6 +350,52 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - name: Recheck operator supplied qualification summary in publish job
+        shell: bash
+        env:
+          QUALIFICATION_SUMMARY_BASE64: ${{ inputs.qualification_summary_base64 }}
+          PHYSICAL_SUMMARY_BASE64: ${{ inputs.physical_summary_base64 }}
+          QUALIFICATION_SUMMARY_SHA256: ${{ inputs.qualification_summary_sha256 }}
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
+          OPERATOR_VERIFIED_SUMMARY: ${{ inputs.operator_verified_summary }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
+          TARGET_ID: ${{ needs.preflight.outputs.target_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+
+          if not os.environ["CANDIDATE_BRANCH"]:
+              raise SystemExit("candidate branch is required before publication")
+          if os.environ["OPERATOR_VERIFIED_SUMMARY"] != "true":
+              raise SystemExit("operator verification is required before publication")
+          if not os.environ["QUALIFICATION_SUMMARY_BASE64"] or not os.environ["PHYSICAL_SUMMARY_BASE64"]:
+              raise SystemExit("candidate evidence bytes are missing before publication")
+          raw = base64.b64decode(os.environ["QUALIFICATION_SUMMARY_BASE64"], validate=True)
+          physical_raw = base64.b64decode(os.environ["PHYSICAL_SUMMARY_BASE64"], validate=True)
+          document = json.loads(raw)
+          if hashlib.sha256(raw).hexdigest() != os.environ["QUALIFICATION_SUMMARY_SHA256"]:
+              raise SystemExit("qualification summary digest changed before publication")
+          if not isinstance(document, dict) or document.get("schema") != 3 or document.get("status") != "passed" or document.get("source_sha") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("candidate qualification summary identity changed before publication")
+          if document.get("candidate_branch") != os.environ["CANDIDATE_BRANCH"]:
+              raise SystemExit("candidate branch changed before publication")
+          if json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n" != raw:
+              raise SystemExit("qualification summary bytes are not canonical")
+          from scripts.verify_publication_groups import read_candidate_qualification_summary
+          checked = read_candidate_qualification_summary(raw, physical_raw)
+          if checked["candidate_branch"] != os.environ["CANDIDATE_BRANCH"] or checked["selected_target_id"] != os.environ["TARGET_ID"] or checked["build_run_id"] != int(os.environ["BUILD_RUN_ID"]):
+              raise SystemExit("candidate Build identity changed before publication")
+          if checked["release_artifact_id"] != int(os.environ["ARTIFACT_ID"]) or checked["release_artifact_digest"] != os.environ["ARTIFACT_DIGEST"]:
+              raise SystemExit("candidate release artifact changed before publication")
+          PY
+
       - name: Fetch and reverify selected build and current P
         id: selected
         shell: bash
@@ -265,7 +403,8 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
           ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BUILD_BRANCH: ${{ needs.preflight.outputs.build_branch }}
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -297,11 +436,13 @@ jobs:
                   raise SystemExit("default branch HEAD changed before publication")
 
           def verify_selected_build() -> None:
+              if not os.environ["CANDIDATE_BRANCH"] or os.environ["BUILD_BRANCH"] != os.environ["CANDIDATE_BRANCH"]:
+                  raise SystemExit("candidate branch changed after preflight")
               if not isinstance(run, dict) or run.get("id") != int(os.environ["BUILD_RUN_ID"]):
                   raise SystemExit("selected build run changed after preflight")
               if run.get("path") != ".github/workflows/build-trial-wheel.yml" or run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success":
                   raise SystemExit("selected build is no longer a successful manual run")
-              if run.get("head_branch") != os.environ["DEFAULT_BRANCH"] or run.get("head_sha") != os.environ["SOURCE_SHA"]:
+              if run.get("head_branch") != os.environ["BUILD_BRANCH"] or run.get("head_sha") != os.environ["SOURCE_SHA"]:
                   raise SystemExit("selected build changed after preflight")
               repository = run.get("repository")
               if not isinstance(repository, dict) or repository.get("full_name") != os.environ["REPOSITORY"]:
@@ -316,6 +457,27 @@ jobs:
 
           verify_selected_build()
           verify_default_head(os.environ["SOURCE_SHA"])
+          PY
+
+      - name: Requery every candidate Build branch in publish job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          QUALIFICATION_SUMMARY_BASE64: ${{ inputs.qualification_summary_base64 }}
+          PHYSICAL_SUMMARY_BASE64: ${{ inputs.physical_summary_base64 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import os
+          from scripts.verify_publication_groups import fetch_candidate_build_run_provenance
+
+          fetch_candidate_build_run_provenance(
+              base64.b64decode(os.environ["QUALIFICATION_SUMMARY_BASE64"], validate=True),
+              base64.b64decode(os.environ["PHYSICAL_SUMMARY_BASE64"], validate=True),
+              repository=os.environ["REPOSITORY"],
+          )
           PY
 
       - name: Recheck that the tag and release are absent before publication

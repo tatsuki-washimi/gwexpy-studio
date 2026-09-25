@@ -760,6 +760,8 @@ class MainWindow(TrialSupportTools, WorkspaceTools):
         local_path = normalized_url.toLocalFile()
         if not local_path:
             return None, "Drop a local file URL"
+        if local_path.splitlines() != [local_path]:
+            return None, "Dropped path cannot contain line breaks"
         path = Path(local_path)
         if path.is_dir():
             return None, "Cannot open a directory"
@@ -783,10 +785,13 @@ class MainWindow(TrialSupportTools, WorkspaceTools):
         self._validate_drop_event(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
-        """Route one validated local file through the ordinary open workflow."""
+        """Prefill the generic Open Data form without reading the dropped file."""
         path = self._validate_drop_event(event)
         if path is not None:
-            self.open_file(path)
+            self.show_open_data()
+            panel = self.open_data_panel
+            if panel is not None:
+                panel.paths_edit.setPlainText(path)
 
     def _on_bridge_safe_to_destroy(self) -> None:
         """Schedule exactly one ordinary close retry after QThread shutdown."""

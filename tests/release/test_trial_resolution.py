@@ -16,6 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from scripts.release_source_manifest import (
     ManifestEntry,
@@ -25,20 +27,11 @@ from scripts.release_source_manifest import (
     read_manifest,
 )
 from scripts.verify_public_source import scan_public_checkout
+from tests.support.trial_io_policy import trial_io_policy_document
 
 pytestmark = pytest.mark.unit
 
-_TRIAL_CAPABILITY_POLICY = {
-    "schema_version": 1,
-    "entries": [
-        {
-            "datatype": "TimeSeries",
-            "format": "csv",
-            "direction": "read",
-            "tier": "A",
-        }
-    ],
-}
+_TRIAL_CAPABILITY_POLICY = trial_io_policy_document()
 _FIXTURE_LICENSE = b"fixture license\n"
 _ENTRY_POINTS = b"[gui_scripts]\ngwexpy-studio = gwexpy_studio.ui.app:main\n"
 _TOP_LEVEL = b"gwexpy_studio\n"
@@ -50,6 +43,8 @@ _M2_RUNTIME_REQUIREMENTS = (
     "scipy<2.0.0,>=1.15.0",
     "astropy<9.0.0,>=7.0.0",
     "matplotlib<4.0.0,>=3.10.0",
+    "lalsuite",
+    "dttxml",
 )
 _M2_DEV_REQUIREMENTS = (
     "setuptools>=68",
@@ -466,6 +461,14 @@ def _canonical_json(value: object) -> bytes:
 
 def _trial_capability_policy_bytes() -> bytes:
     return _canonical_json(_TRIAL_CAPABILITY_POLICY)
+
+
+def test_resolution_runtime_mirror_includes_trial_reader_backends() -> None:
+    names = {
+        canonicalize_name(Requirement(value).name)
+        for value in _M2_RUNTIME_REQUIREMENTS
+    }
+    assert {"lalsuite", "dttxml"} <= names
 
 
 def _sha256(content: bytes) -> str:

@@ -5,6 +5,18 @@ import pytest
 from astropy import units as u
 
 
+def _assert_timeseries_equal(adapted, direct):
+    """Compare data, representation, coordinates, and units across read paths."""
+    assert type(adapted) is type(direct)
+    np.testing.assert_array_equal(adapted.value, direct.value)
+    assert adapted.t0 == direct.t0
+    assert adapted.dt == direct.dt
+    if hasattr(adapted, "unit"):
+        assert adapted.unit == direct.unit
+    else:
+        np.testing.assert_array_equal(adapted.units, direct.units)
+
+
 @pytest.mark.contract("SIG-0032")
 def test_typed_options_preserve_quantities_and_complex_values():
     from gwexpy_studio.ops.values import decode_value, encode_value
@@ -17,6 +29,223 @@ def test_typed_options_preserve_quantities_and_complex_values():
     assert np.isnan(restored["pad"])
     with pytest.raises(ValueError, match="Unknown"):
         decode_value({"__type__": "python", "value": "raise RuntimeError()"})
+
+
+@pytest.mark.parametrize(
+    ("datatype", "products"),
+    [
+        ("TimeSeries", "TS"),
+        ("TimeSeriesDict", "TS"),
+        ("TimeSeriesMatrix", "TS"),
+    ],
+)
+def test_diaggui_adapter_forwards_products_without_claiming_reader_success(
+    monkeypatch, tmp_path, datatype, products
+):
+    """Pass the required product option; this fake-reader test is not a parse test."""
+    from gwexpy_studio.ops import io
+
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+    calls = []
+
+    class Native:
+        @classmethod
+        def read(cls, source, *args, **kwargs):
+            calls.append((source, args, kwargs))
+            return "native-result"
+
+    monkeypatch.setattr(io, "io_class", lambda _datatype: Native)
+
+    result = io.read_data(
+        datatype,
+        str(tmp_path / "measurement.xml"),
+        format="xml.diaggui",
+        kwargs={"station": "X1"},
+    )
+
+    assert result == "native-result"
+    assert calls == [
+        (
+            str(tmp_path / "measurement.xml"),
+            (),
+            {
+                "station": "X1",
+                "format": "xml.diaggui",
+                "products": products,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "datatype", ["TimeSeries", "TimeSeriesDict", "TimeSeriesMatrix"]
+)
+@pytest.mark.parametrize("format_name", ["xml.diaggui", None])
+def test_diaggui_rejects_product_incompatible_with_selected_timeseries_type(
+    monkeypatch, tmp_path, datatype, format_name
+):
+    """The selected Studio datatype, not custom options, selects XML products."""
+    from gwexpy_studio.ops import io
+
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+    calls = []
+
+    class Native:
+        @classmethod
+        def read(cls, source, *args, **kwargs):
+            calls.append((source, args, kwargs))
+            return "native-result"
+
+    monkeypatch.setattr(io, "io_class", lambda _datatype: Native)
+
+    with pytest.raises(ValueError, match="products='TS'"):
+        io.read_data(
+            datatype,
+            str(tmp_path / "measurement.xml"),
+            format=format_name,
+            kwargs={"products": "ASD"},
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("datatype", "format_name"),
+    [
+        ("TimeSeries", "gwf.lalframe"),
+        ("TimeSeries", "gwf"),
+        ("TimeSeriesDict", "gwf.lalframe"),
+        ("TimeSeriesDict", "gwf"),
+        ("TimeSeries", "hdf.ndscope"),
+        ("TimeSeriesDict", "hdf.ndscope"),
+    ],
+)
+def test_explicit_trial_format_reaches_native_reader_unchanged(
+    monkeypatch, tmp_path, datatype, format_name
+):
+    """Do not alias or auto-detect a trial reader after explicit user selection."""
+    from gwexpy_studio.ops import io
+
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+    calls = []
+
+    class Native:
+        @classmethod
+        def read(cls, source, *args, **kwargs):
+            calls.append((source, args, kwargs))
+            return "native-result"
+
+    monkeypatch.setattr(io, "io_class", lambda _datatype: Native)
+    source = str(tmp_path / "selected-input")
+
+    result = io.read_data(datatype, source, format=format_name)
+
+    assert result == "native-result"
+    assert calls == [(source, (), {"format": format_name})]
+
+
+@pytest.mark.parametrize("format_name", ["gwf.lalframe", "gwf"])
+def test_gwf_adapter_matches_native_reader_for_real_fixture(monkeypatch, format_name):
+    """Read real frame data through both reviewed GWF formats and the adapter."""
+    if format_name == "gwf.lalframe":
+        pytest.importorskip("lalframe")
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+
+    from gwexpy.timeseries import TimeSeries, TimeSeriesDict
+    from gwpy.testing.utils import TEST_GWF_FILE
+
+    from gwexpy_studio.ops.io import read_data
+
+    direct_dict = TimeSeriesDict.read(TEST_GWF_FILE, format=format_name)
+    adapted_dict = read_data("TimeSeriesDict", TEST_GWF_FILE, format=format_name)
+
+    assert type(adapted_dict) is type(direct_dict) is TimeSeriesDict
+    assert tuple(adapted_dict) == tuple(direct_dict)
+    assert adapted_dict
+    channel = next(iter(direct_dict))
+    direct_series = TimeSeries.read(TEST_GWF_FILE, channel=channel, format=format_name)
+    adapted_series = read_data(
+        "TimeSeries",
+        TEST_GWF_FILE,
+        format=format_name,
+        kwargs={"channel": channel},
+    )
+
+    assert type(adapted_series) is type(direct_series) is TimeSeries
+    _assert_timeseries_equal(adapted_series, direct_series)
+    for name in direct_dict:
+        _assert_timeseries_equal(adapted_dict[name], direct_dict[name])
+
+
+def test_ndscope_adapter_matches_native_reader_for_real_fixture(monkeypatch, tmp_path):
+    """Read a real NDScope-schema HDF5 file through GWexpy and the adapter."""
+    pytest.importorskip("h5py")
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+
+    from gwexpy.timeseries import TimeSeries, TimeSeriesDict
+
+    from gwexpy_studio.ops.io import read_data
+
+    channel = "H1:TEST-CHANNEL"
+    source = TimeSeriesDict(
+        {
+            channel: TimeSeries(
+                [0.25, -1.5, 2.0, 0.75],
+                t0=1126259462,
+                sample_rate=4,
+                unit="ct",
+            )
+        }
+    )
+    path = tmp_path / "ndscope.h5"
+    source.write(str(path), format="hdf.ndscope")
+
+    direct_dict = TimeSeriesDict.read(str(path), format="hdf.ndscope")
+    adapted_dict = read_data("TimeSeriesDict", str(path), format="hdf.ndscope")
+    direct_series = TimeSeries.read(str(path), channel=channel, format="hdf.ndscope")
+    adapted_series = read_data(
+        "TimeSeries",
+        str(path),
+        format="hdf.ndscope",
+        kwargs={"channel": channel},
+    )
+
+    assert type(adapted_dict) is type(direct_dict) is TimeSeriesDict
+    assert tuple(adapted_dict) == tuple(direct_dict) == (channel,)
+    assert type(adapted_series) is type(direct_series) is TimeSeries
+    _assert_timeseries_equal(adapted_dict[channel], direct_dict[channel])
+    _assert_timeseries_equal(adapted_series, direct_series)
+
+
+@pytest.mark.parametrize(
+    "datatype", ["TimeSeries", "TimeSeriesDict", "TimeSeriesMatrix"]
+)
+def test_diaggui_adapter_matches_native_reader_for_real_fixture(
+    monkeypatch, tmp_path, datatype
+):
+    """Compare real XML parsing through Studio with GWexpy's direct reader."""
+    pytest.importorskip(
+        "dttxml", reason="GWexpy's native fallback parser does not decode TS products"
+    )
+    monkeypatch.delenv("GWEXPY_STUDIO_IO_CAPABILITIES", raising=False)
+
+    from gwexpy_studio.ops.io import io_class, read_data
+    from tests.support.trial_io_fixtures import write_minimal_diaggui_timeseries
+
+    source = write_minimal_diaggui_timeseries(tmp_path / "measurement.xml")
+    native_class = io_class(datatype)
+    direct = native_class.read(str(source), format="xml.diaggui", products="TS")
+    adapted = read_data(datatype, str(source), format="xml.diaggui")
+
+    assert type(adapted) is type(direct)
+    if datatype == "TimeSeriesDict":
+        assert direct
+        assert set(adapted) == set(direct)
+        for name in direct:
+            _assert_timeseries_equal(adapted[name], direct[name])
+    else:
+        assert len(direct) > 0
+        _assert_timeseries_equal(adapted, direct)
 
 
 @pytest.mark.parametrize("family", ["TimeSeries", "FrequencySeries", "Spectrogram"])

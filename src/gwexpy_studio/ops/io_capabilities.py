@@ -813,6 +813,36 @@ def _native_registry_facts(
                 if "runtime_dependency_missing" in query_failures
                 else "probe_failed"
             )
+        elif direction == "read":
+            # GWexpy exposes some explicit aliases through get_reader() even
+            # when get_formats() only reports the implementation name. Probe
+            # only known aliases so permissive lookup cannot promote an
+            # unreviewed format.
+            aliases = getattr(io_module, "_GWF_READER_ROUTES", ())
+            if not isinstance(aliases, tuple):
+                aliases = ()
+            for format_name, reviewed_direction in reviewed_keys:
+                if (
+                    reviewed_direction != direction
+                    or format_name not in aliases
+                    or (format_name, direction) in native
+                ):
+                    continue
+                for registry in registries:
+                    getter = getattr(registry, "get_reader", None)
+                    if not callable(getter):
+                        continue
+                    try:
+                        getter(format_name, datatype)
+                    except Exception as error:
+                        query_failures.append(_runtime_failure_reason(error))
+                    else:
+                        native[(format_name, direction)] = (
+                            True,
+                            False,
+                            (registry,),
+                        )
+                        break
     return native, failures
 
 

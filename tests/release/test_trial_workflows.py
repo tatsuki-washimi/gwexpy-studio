@@ -430,7 +430,7 @@ def test_publish_trial_workflow_rechecks_an_explicit_build_in_publish_job() -> N
     publish_recheck = workflow[workflow.index("Fetch and reverify selected build") :]
     assert 'run.get("event") != "workflow_dispatch"' in publish_recheck
     assert 'run.get("status") != "completed"' in publish_recheck
-    assert 'run.get("head_branch") != os.environ["DEFAULT_BRANCH"]' in publish_recheck
+    assert 'run.get("head_branch") != os.environ["BUILD_BRANCH"]' in publish_recheck
     assert 'repository.get("full_name") != os.environ["REPOSITORY"]' in publish_recheck
     assert workflow.index("final-default-head.json") < workflow.index(
         '"repos/$REPOSITORY/git/refs"'
