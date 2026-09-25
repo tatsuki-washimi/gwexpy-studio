@@ -186,8 +186,21 @@ and record its Build ID.
 If launch, project reopen, or recovery cannot continue, tell the sender what
 was displayed and which action was performed immediately before the failure.
 
-This distribution checks reading a time-series CSV. Operations that are not
-available are shown on screen.
+## Supported trial reads
+
+The trial supports these read routes:
+
+| Data type | Format and reader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`, `TimeSeriesDict` | GWF: `gwf.lalframe` (recommended); `gwf` (also selectable) |
+| `TimeSeries`, `TimeSeriesDict`, `TimeSeriesMatrix` | DiagGUI XML: `xml.diaggui`, product `TS` |
+| `TimeSeries`, `TimeSeriesDict` | NDScope HDF5: `hdf.ndscope` |
+
+The trial reads source files through these routes and does not write back to them. In **Open Data**, choose the data type and format, press **Inspect / Review**, review the result, and then explicitly press **Read Data**.
+Dragging a file only fills the generic **Open Data** form; it does not identify the data type or format, or start a read.
+
+On GWexpy 0.2.0, DiagGUI XML reads into `FrequencySeries`, `FrequencySeriesDict`, and `FrequencySeriesMatrix` are currently unavailable and fail closed.
 
 Complete `Feedback.ja.md` and reply to the email or chat that supplied the
 prerelease link. Before sending, redact usernames, hostnames, personal save

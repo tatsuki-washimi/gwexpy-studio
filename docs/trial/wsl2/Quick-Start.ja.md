@@ -1,7 +1,7 @@
 # GWexpy Studio WSL2試用版クイックスタート
 
 このページは、検証済みWSL2試用版ZIPを使う参加者向けです。
-source checkoutから実行または開発する場合は、[source導入ガイド](../../installation.ja.md)を使います。WSL2のpreflightに失敗した場合の回避策としてsource installを使いません。
+このガイドはWSL2試用版bundleを対象とします。WSL2のpreflightに失敗した場合は導入を中止してください。
 
 この手順は、Windows 11上のUbuntu 24.04 WSL2とWSLgで、Linux GUIとして
 `wsl2-ubuntu24` prereleaseを使うためのものです。Windows native版ではありません。
@@ -204,8 +204,21 @@ Welcomeが表示されたら、**Try Sample → Load → Crop → ASD → Save �
 GitHubアカウントは不要です。機密の測定データ、認証情報、username、hostname、
 端末固有path、無関係なlogは送らないでください。
 
-## 既知のI/O制約
+## 試用版で利用できる読込
 
-確認対象はTimeSeriesのCSV読込です。対象外のI/Oは利用不可と表示され、実行できない
-場合があります。表示や操作が想定と異なる場合は、画面と直前の操作を案内者へ送付して
-ください。
+試用版では次の読込ルートを利用できます。
+
+| data type | formatとreader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`、`TimeSeriesDict` | GWF：`gwf.lalframe`（推奨）、`gwf`も選択可能 |
+| `TimeSeries`、`TimeSeriesDict`、`TimeSeriesMatrix` | DiagGUI XML：`xml.diaggui`、product `TS` |
+| `TimeSeries`、`TimeSeriesDict` | NDScope HDF5：`hdf.ndscope` |
+
+試用版では一覧のルートで元データを読み込みますが、元ファイルへ書き戻しません。
+**Open Data**でdata typeとformatを選び、**Inspect / Review**で内容を確認してから、明示的に**Read Data**を押します。
+ファイルをdragすると汎用の**Open Data** formに入力されますが、data typeやformatの自動判別も読込開始も行いません。
+
+GWexpy 0.2.0では、DiagGUI XMLから`FrequencySeries`、`FrequencySeriesDict`、`FrequencySeriesMatrix`への読込は現在利用できず、fail-closedで扱います。
+
+表示や操作が想定と異なる場合は、画面と直前の操作を案内者へ送付してください。

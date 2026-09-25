@@ -1,7 +1,7 @@
 # GWexpy Studio WSL2 trial quick start
 
 This page is for participants using the verified WSL2 trial ZIP.
-For a source checkout, use the [source installation guide](../../installation.md) instead; a source install is not a workaround for a failed WSL2 preflight.
+This guide covers the WSL2 trial bundle only. A failed WSL2 preflight is a stop condition.
 
 This guide is for the `wsl2-ubuntu24` prerelease on Windows 11 with Ubuntu 24.04
 on WSL2 and WSLg. It runs as a Linux GUI in WSL2, not as a native Windows
@@ -207,8 +207,20 @@ Complete `Feedback.ja.md` and reply to the supplied email or chat. A GitHub
 account is not required. Do not send confidential measurement data, credentials,
 usernames, hostnames, device-specific paths, or unrelated logs.
 
-## Known I/O limitation
+## Supported trial reads
 
-The covered I/O is reading a TimeSeries CSV. Other I/O may be shown as
-unavailable and may not run. If the display or operation differs from the
-expected behavior, send the screen and preceding action to the guide contact.
+The trial supports these read routes:
+
+| Data type | Format and reader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`, `TimeSeriesDict` | GWF: `gwf.lalframe` (recommended); `gwf` (also selectable) |
+| `TimeSeries`, `TimeSeriesDict`, `TimeSeriesMatrix` | DiagGUI XML: `xml.diaggui`, product `TS` |
+| `TimeSeries`, `TimeSeriesDict` | NDScope HDF5: `hdf.ndscope` |
+
+The trial reads source files through these routes and does not write back to them. In **Open Data**, choose the data type and format, press **Inspect / Review**, review the result, and then explicitly press **Read Data**.
+Dragging a file only fills the generic **Open Data** form; it does not identify the data type or format, or start a read.
+
+On GWexpy 0.2.0, DiagGUI XML reads into `FrequencySeries`, `FrequencySeriesDict`, and `FrequencySeriesMatrix` are currently unavailable and fail closed.
+
+If the display or operation differs from the expected behavior, send the screen and preceding action to the guide contact.

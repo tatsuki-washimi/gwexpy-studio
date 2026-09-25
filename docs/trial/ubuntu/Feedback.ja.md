@@ -39,7 +39,8 @@ Welcome表示後に**Try Sample → Load → Crop → ASD → Save → Close →
 - 表示倍率、native file dialog、Unicodeまたは空白を含むpathで気付いた点:
 - 分かりにくかった表示、用語、操作:
 - エラーメッセージと、その直前の操作:
-- 時系列CSVの読込以外の操作を試した場合の表示:
+- 試した読込ルート（data type / format）と結果:
+- 利用不可と表示されたdata type / format:
 - 自由記述:
 
 エラー表示と直前の操作を案内者へ送る前に、ユーザー名、ホスト名、個人の保存場所、認証情報、機密の測定データを伏せてください。

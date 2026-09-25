@@ -21,8 +21,8 @@ The source route resolves the package dependencies for development or local eval
 From the [GWexpy Studio GitHub Releases](https://github.com/tatsuki-washimi/gwexpy-studio/releases) page, download these two files with the same Build ID into an empty directory:
 
 ~~~text
-gwexpy-studio-trial-<build-id>.zip
-gwexpy-studio-trial-<build-id>.zip.sha256
+gwexpy-studio-trial-<target>-<build-id>.zip
+gwexpy-studio-trial-<target>-<build-id>.zip.sha256
 ~~~
 
 Verify the outer checksum, unpack the archive, and then verify the checksums inside the bundle.
@@ -42,6 +42,7 @@ cd "$bundle"
 sha256sum -c SHA256SUMS
 ~~~
 
+For Debian, use the target-specific checksum commands in the Debian section below.
 On macOS, replace sha256sum with shasum -a 256.
 If either checksum fails, stop without installing.
 
@@ -139,6 +140,143 @@ If libEGL.so.1 or libGL.so.1 is missing, install libegl1 and libgl1 before retry
 </details>
 
 <details>
+<summary>Native Debian 13 / x86_64</summary>
+
+Use this route only when the same Release contains the `debian13-x86_64` asset.
+Use a native Debian 13 x86_64 graphical desktop, Bash, conda, `unzip`, and `sha256sum`.
+Conda and pip need network access. An administrator may need to install the listed Qt display packages.
+
+From the empty download directory containing the Debian ZIP and its `.zip.sha256` sidecar, verify and unpack exactly one matching pair:
+
+~~~bash
+set -euo pipefail
+shopt -s nullglob
+archives=(gwexpy-studio-trial-debian13-x86_64-*.zip)
+sidecars=(gwexpy-studio-trial-debian13-x86_64-*.zip.sha256)
+test "${#archives[@]}" -eq 1
+test "${#sidecars[@]}" -eq 1
+test "${sidecars[0]%.sha256}" = "${archives[0]}"
+sha256sum -c "${sidecars[0]}"
+archive="${archives[0]}"
+unzip "$archive"
+bundle="${archive%.zip}"
+cd "$bundle"
+sha256sum -c SHA256SUMS
+~~~
+
+Every checksum must report `OK`. Stop if any check fails.
+In a terminal in the graphical desktop session, confirm the host:
+
+~~~bash
+set -euo pipefail
+if grep -qi microsoft /proc/sys/kernel/osrelease; then
+  echo "WSL is not supported by this guide." >&2
+  exit 1
+fi
+. /etc/os-release
+test "${ID:-}" = debian
+test "${VERSION_ID:-}" = 13
+test "$(uname -m)" = x86_64
+test -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}"
+printf '%s\n' "$PRETTY_NAME" "$(uname -m)"
+~~~
+
+Stop if the host check fails. Create a dedicated conda environment, refusing to overwrite an existing one:
+
+~~~bash
+set -euo pipefail
+env_name=gwexpy-studio-debian13
+if ! env_list="$(conda env list)"; then
+  echo "conda env list failed; stop." >&2
+  exit 1
+fi
+if printf '%s\n' "$env_list" | awk -v name="$env_name" \
+  '$1 == name { found=1 } END { exit found ? 0 : 1 }'; then
+  echo "conda environment already exists: $env_name" >&2
+  exit 1
+fi
+conda create -n "$env_name" python=3.12 pip
+conda activate "$env_name"
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+python - <<'PY'
+import platform
+import sys
+
+assert sys.version_info[:2] == (3, 12)
+assert platform.machine() == "x86_64"
+PY
+python --version
+conda --version
+python -m pip --version
+~~~
+
+Keep this environment active. In each new trial terminal, activate it again, set `PYTHONNOUSERSITE=1`, and unset `PYTHONPATH`.
+Check the Qt display libraries; install only the documented Debian packages if the check fails, then run it again:
+
+~~~bash
+set -euo pipefail
+probe_runtime() {
+  python - <<'PY'
+import ctypes
+
+libraries = (
+    "libEGL.so.1", "libGL.so.1", "libfontconfig.so.1", "libglib-2.0.so.0",
+    "libdbus-1.so.3", "libxkbcommon.so.0", "libzstd.so.1", "libX11-xcb.so.1",
+    "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
+    "libxcb-randr.so.0", "libxcb-render-util.so.0",
+    "libxcb-shape.so.0", "libxcb-shm.so.0", "libxcb-sync.so.1",
+    "libxcb-xfixes.so.0", "libxcb-xkb.so.1", "libxkbcommon-x11.so.0",
+    "libSM.so.6", "libICE.so.6", "libwayland-client.so.0",
+    "libwayland-cursor.so.0", "libxcb-keysyms.so.1",
+)
+missing = []
+for library in libraries:
+    try:
+        ctypes.CDLL(library)
+    except OSError:
+        missing.append(library)
+if missing:
+    print("Missing runtime libraries:", " ".join(missing))
+    raise SystemExit(1)
+print("Qt display runtime: OK")
+PY
+}
+
+if probe_runtime; then
+  :
+else
+  packages=(
+    libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libdbus-1-3
+    libxkbcommon0 libzstd1 libx11-xcb1 libxcb-cursor0 libxcb-icccm4
+    libxcb-keysyms1 libxcb-randr0 libxcb-shape0 libxcb-sync1
+    libxcb-xfixes0 libxkbcommon-x11-0 libsm6 libwayland-cursor0
+  )
+  sudo apt-get update
+  sudo apt-get install --no-install-recommends -y "${packages[@]}"
+  probe_runtime
+fi
+~~~
+
+Install the one bundled wheel with its Debian constraints, then launch Studio:
+
+~~~bash
+set -euo pipefail
+shopt -s nullglob
+wheels=(gwexpy_studio-*.whl)
+test "${#wheels[@]}" -eq 1
+test -f constraints-debian13-x86_64.txt
+python -m pip install --only-binary=:all: \
+  -c constraints-debian13-x86_64.txt \
+  "./${wheels[0]}"
+gwexpy-studio
+~~~
+
+If another library is missing or installation fails, record the displayed error and the step that failed. The [Debian Quick Start](trial/debian/Quick-Start.md) has more diagnostic detail.
+
+</details>
+
+<details>
 <summary>macOS 15 or newer / Apple Silicon</summary>
 
 Use this route only when the same Release contains a macos15-arm64 asset.
@@ -223,11 +361,27 @@ History records timeseries.crop and timeseries.asd.
 
 ![Saved project reopened in GWexpy Studio](images/installation/04-reopen-project.png)
 
-Use **File → Save Project** to save a .gwxproj, close Studio, and launch it again.
+Use **File → Save** to save a .gwxproj, close Studio, and launch it again.
 If **Review / Restore Data** is required after reopening, follow the displayed review step.
 The project stores source references, operations, active state, view state, and the Undo/Redo position.
 
-## 5. Minimum checks
+## 5. Read supported trial data
+
+The trial reads source files through these routes and does not write back to them:
+
+| Data type | Format and reader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`, `TimeSeriesDict` | GWF: `gwf.lalframe` (recommended); `gwf` (also selectable) |
+| `TimeSeries`, `TimeSeriesDict`, `TimeSeriesMatrix` | DiagGUI XML: `xml.diaggui`, product `TS` |
+| `TimeSeries`, `TimeSeriesDict` | NDScope HDF5: `hdf.ndscope` |
+
+In **Open Data**, choose the data type and format, press **Inspect / Review**, review the result, and then explicitly press **Read Data**.
+Dropping a file only fills the generic **Open Data** form; it does not identify the data type or format, or start a read.
+
+On GWexpy 0.2.0, DiagGUI XML reads into `FrequencySeries`, `FrequencySeriesDict`, and `FrequencySeriesMatrix` are currently unavailable and fail closed.
+
+## 6. Minimum checks
 
 Run these commands in the environment that should launch Studio:
 
@@ -247,7 +401,8 @@ On WSL2, confirm /mnt/wslg and powershell.exe again.
 
 Use the following only when you need detailed qualification records, diagnostics, or feedback formats:
 
-- [Ubuntu Quick Start](Quick-Start.md)
+- [Ubuntu Quick Start](trial/ubuntu/Quick-Start.md)
+- [Debian Quick Start](trial/debian/Quick-Start.md)
 - [WSL2 Quick Start](trial/wsl2/Quick-Start.md)
 - [macOS Quick Start](trial/macos/Quick-Start.md)
 

@@ -1,7 +1,7 @@
 # GWexpy Studio macOS試用版クイックスタート
 
 このページは、検証済みmacOS試用版ZIPを使う参加者向けです。
-source checkoutから実行または開発する場合は、[source導入ガイド](../../installation.ja.md)を使い、二つの経路を混ぜません。
+このガイドはmacOS試用版bundleを対象とします。source installと混ぜないでください。
 
 この手順は、Apple Silicon MacのmacOS 15以上で使う`macos15-arm64` prerelease専用です。
 Intel Mac、WSL2、Linuxでは使用しません。
@@ -144,10 +144,26 @@ gwexpy-studio
 
 SaveとOpenではファイル選択画面を使い、日本語と空白を含む保存場所も確認します。
 表示倍率に問題があれば、再現した操作と表示を記録します。
-この配布で確認する読込は時系列CSVです。
-使用できない種類は画面に使用不可と表示されます。
+
 ReviewまたはRestoreが表示された場合だけ、表示されたか、そこから継続できたかを記録します。
 Aboutを開き、Build IDを記録します。
+
+## 試用版で利用できる読込
+
+試用版では次の読込ルートを利用できます。
+
+| data type | formatとreader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`、`TimeSeriesDict` | GWF：`gwf.lalframe`（推奨）、`gwf`も選択可能 |
+| `TimeSeries`、`TimeSeriesDict`、`TimeSeriesMatrix` | DiagGUI XML：`xml.diaggui`、product `TS` |
+| `TimeSeries`、`TimeSeriesDict` | NDScope HDF5：`hdf.ndscope` |
+
+試用版では一覧のルートで元データを読み込みますが、元ファイルへ書き戻しません。
+**Open Data**でdata typeとformatを選び、**Inspect / Review**で内容を確認してから、明示的に**Read Data**を押します。
+ファイルをdragすると汎用の**Open Data** formに入力されますが、data typeやformatの自動判別も読込開始も行いません。
+
+GWexpy 0.2.0では、DiagGUI XMLから`FrequencySeries`、`FrequencySeriesDict`、`FrequencySeriesMatrix`への読込は現在利用できず、fail-closedで扱います。
 
 正常なSave → Close → Openの結果を記録します。
 起動、再オープン、復旧で進行できない場合は、エラー表示と直前の操作を案内者へ連絡してください。

@@ -38,7 +38,8 @@
 - Linux側path、`/mnt/c`、日本語または空白を含むpathで気付いた点:
 - 分かりにくかった表示、用語、操作:
 - エラーメッセージと、その直前の操作:
-- TimeSeriesのCSV読込、利用不可表示、実行制御で気付いた点:
+- 試した読込ルート（data type / format）と結果:
+- 利用不可と表示されたdata type / format、実行制御で気付いた点:
 - 自由記述:
 
 install、launch、project reopen、recoveryで進行不能になった場合は、回避策を試さず、

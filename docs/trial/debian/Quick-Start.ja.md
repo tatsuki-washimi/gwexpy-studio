@@ -178,8 +178,22 @@ Aboutを開き、Build IDを記録します。
 
 起動、プロジェクトの再オープン、復旧で進行できなくなった場合は、表示された内容と直前の操作を案内元へ知らせます。
 
-この配布では時系列CSVの読み込みを確認します。
-利用できない操作は画面に表示されます。
+## 試用版で利用できる読込
+
+試用版では次の読込ルートを利用できます。
+
+| data type | formatとreader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`、`TimeSeriesDict` | GWF：`gwf.lalframe`（推奨）、`gwf`も選択可能 |
+| `TimeSeries`、`TimeSeriesDict`、`TimeSeriesMatrix` | DiagGUI XML：`xml.diaggui`、product `TS` |
+| `TimeSeries`、`TimeSeriesDict` | NDScope HDF5：`hdf.ndscope` |
+
+試用版では一覧のルートで元データを読み込みますが、元ファイルへ書き戻しません。
+**Open Data**でdata typeとformatを選び、**Inspect / Review**で内容を確認してから、明示的に**Read Data**を押します。
+ファイルをdragすると汎用の**Open Data** formに入力されますが、data typeやformatの自動判別も読込開始も行いません。
+
+GWexpy 0.2.0では、DiagGUI XMLから`FrequencySeries`、`FrequencySeriesDict`、`FrequencySeriesMatrix`への読込は現在利用できず、fail-closedで扱います。
 
 `Feedback.ja.md`へ記入し、案内されたメールまたはチャットへ返信してください。
 送る前に、ユーザー名、ホスト名、個人の保存場所、認証情報、機密の測定データを伏せ、エラー表示と直前の操作を案内者へ伝えてください。

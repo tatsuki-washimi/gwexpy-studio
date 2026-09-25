@@ -186,8 +186,22 @@ ReviewまたはRestoreが表示された場合は、そこから継続できた�
 起動、再オープン、復旧で進行できなくなった場合は、エラー表示と直前の操作を記録して案内を送った人へ連絡してください。
 送る前に、ユーザー名、ホスト名、個人の保存場所、認証情報、機密の測定データを伏せてください。
 
-この配布で確認する読込は時系列CSVです。
-その他の形式や入出力は使用できない場合があるため、アプリケーションの表示を確認してください。
+## 試用版で利用できる読込
+
+試用版では次の読込ルートを利用できます。
+
+| data type | formatとreader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`、`TimeSeriesDict` | GWF：`gwf.lalframe`（推奨）、`gwf`も選択可能 |
+| `TimeSeries`、`TimeSeriesDict`、`TimeSeriesMatrix` | DiagGUI XML：`xml.diaggui`、product `TS` |
+| `TimeSeries`、`TimeSeriesDict` | NDScope HDF5：`hdf.ndscope` |
+
+試用版では一覧のルートで元データを読み込みますが、元ファイルへ書き戻しません。
+**Open Data**でdata typeとformatを選び、**Inspect / Review**で内容を確認してから、明示的に**Read Data**を押します。
+ファイルをdragすると汎用の**Open Data** formに入力されますが、data typeやformatの自動判別も読込開始も行いません。
+
+GWexpy 0.2.0では、DiagGUI XMLから`FrequencySeries`、`FrequencySeriesDict`、`FrequencySeriesMatrix`への読込は現在利用できず、fail-closedで扱います。
 
 ## feedbackの送付
 

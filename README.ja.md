@@ -23,22 +23,20 @@ sourceの経路は、開発またはローカル評価のためにpackageの依�
 
 試用版は、targetごとのZIPと対応する外側checksum sidecarで配布します。
 
-候補文書は`ubuntu24-x86_64`、`debian13-x86_64`、`wsl2-ubuntu24`、
-`macos15-arm64`の4targetを扱います。
+候補ガイドは`ubuntu24-x86_64`、`debian13-x86_64`、`wsl2-ubuntu24`、
+`macos15-arm64`の4targetを扱います。ガイドは配布物ではありません。
+公開済みassetと現在の配布状況は[GitHub Releases](https://github.com/tatsuki-washimi/gwexpy-studio/releases)で確認してください。
 
 guideが存在することは、そのtargetが公開済みまたはqualification済みであることを意味しません。
 送付者が明示した検証済みReleaseだけを使用してください。
 
-同じBuild IDを持つZIPとchecksum sidecarをダウンロードし、外側と内部のchecksumを確認してから、[導入ガイド](docs/installation.ja.md)の端末セクションまたはtarget別Quick Startへ進みます。
+同じBuild IDを持つZIPとchecksum sidecarをダウンロードし、外側と内部のchecksumを確認してから、[導入ガイド](docs/installation.ja.md)の対応する端末セクションへ進みます。
 
 試用者に必要なのは、Python 3.12を使うcondaです。
 Git、source checkout、editable install、GitHub accountは不要です。
 
-送付されたtarget名に対応するQuick Startを使ってください。
-Quick Startは、配布物に含まれるZIP、wheel、constraintsを一意に確認し、専用conda環境を作り、OSのPythonを変更せずに導入します。
-
 target別の手順は[docs/trial](docs/trial)にあります。
-公開後は外部の配布一覧で、現在のReleaseと実際に試験したOS版を確認してください。
+導入前に、対応する公開Releaseとそこで確認できる試験済みOS版を確認してください。
 
 ZIPにはwheel、constraints、checksum、build identity、target別Quick Start、
 日本語のfeedback formを収録します。
@@ -82,6 +80,21 @@ projectにはsource reference、operation、active state、view state、scientif
 ## I/Oの利用可否
 
 GWexpyに登録されたformatが、trial buildで自動的に使えるとは限りません。
+
+試用版で利用できる読込ルートは次のとおりです。
+
+| data type | formatとreader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`、`TimeSeriesDict` | GWF：`gwf.lalframe`（推奨）、`gwf`も選択可能 |
+| `TimeSeries`、`TimeSeriesDict`、`TimeSeriesMatrix` | DiagGUI XML：`xml.diaggui`、product `TS` |
+| `TimeSeries`、`TimeSeriesDict` | NDScope HDF5：`hdf.ndscope` |
+
+試用版では一覧のルートで元データを読み込みますが、元ファイルへ書き戻しません。
+**Open Data**でdata typeとformatを選び、**Inspect / Review**で内容を確認してから、明示的に**Read Data**を押します。
+ファイルをドロップすると汎用の**Open Data** formに入力されますが、data typeやformatの自動判別も読込開始も行いません。
+
+GWexpy 0.2.0では、DiagGUI XMLから`FrequencySeries`、`FrequencySeriesDict`、`FrequencySeriesMatrix`への読込は現在利用できず、fail-closedで扱います。
 
 UIはdata type、format、read/write directionごとに次のいずれかを表示します。
 

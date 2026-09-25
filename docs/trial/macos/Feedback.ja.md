@@ -25,7 +25,7 @@
 ## Workflow
 
 - `Try Sample → Load → Crop → ASD`の結果:
-- この配布で確認した時系列CSVの読込結果:
+- 試した読込ルート（data type / format）と結果:
 - 使用不可と画面表示された種類:
 - Save → Close → Openの結果:
 - ファイル選択画面の結果:

@@ -21,8 +21,8 @@ sourceの経路は、開発またはローカル評価のためにpackageの依�
 [GWexpy StudioのGitHub Releases](https://github.com/tatsuki-washimi/gwexpy-studio/releases)から、同じBuild IDを持つ次の2ファイルを空のディレクトリへダウンロードします。
 
 ~~~text
-gwexpy-studio-trial-<build-id>.zip
-gwexpy-studio-trial-<build-id>.zip.sha256
+gwexpy-studio-trial-<target>-<build-id>.zip
+gwexpy-studio-trial-<target>-<build-id>.zip.sha256
 ~~~
 
 外側のchecksumを確認してから展開し、展開先で内部checksumを確認します。
@@ -42,6 +42,7 @@ cd "$bundle"
 sha256sum -c SHA256SUMS
 ~~~
 
+Debianでは、下のDebian用セクションにあるchecksum確認手順を使います。
 macOSでは sha256sum を shasum -a 256 に置き換えます。
 どちらかのchecksumが失敗した場合は、installせずに終了します。
 
@@ -139,6 +140,149 @@ libEGL.so.1またはlibGL.so.1が見つからない場合は、libegl1とlibgl1�
 </details>
 
 <details>
+<summary>native Debian 13 / x86_64</summary>
+
+同じReleaseに`debian13-x86_64` assetが含まれる場合だけ、この経路を使います。
+画面を使えるnative Debian 13 x86_64、Bash、conda、`unzip`、`sha256sum`を用意します。
+condaとpipにはネット接続が必要です。
+Qtの画面表示に必要なパッケージが不足している場合は、管理者権限で導入します。
+
+Debian用ZIPと`.zip.sha256`を保存した空のフォルダーで、対応する一組だけを確認して展開します。
+
+~~~bash
+set -euo pipefail
+shopt -s nullglob
+archives=(gwexpy-studio-trial-debian13-x86_64-*.zip)
+sidecars=(gwexpy-studio-trial-debian13-x86_64-*.zip.sha256)
+test "${#archives[@]}" -eq 1
+test "${#sidecars[@]}" -eq 1
+test "${sidecars[0]%.sha256}" = "${archives[0]}"
+sha256sum -c "${sidecars[0]}"
+archive="${archives[0]}"
+unzip "$archive"
+bundle="${archive%.zip}"
+cd "$bundle"
+sha256sum -c SHA256SUMS
+~~~
+
+すべてのchecksumが`OK`になることを確認します。
+失敗した場合はインストールせずに終了します。
+デスクトップで開いた端末から、OS、CPU、画面の有無を確認します。
+
+~~~bash
+set -euo pipefail
+if grep -qi microsoft /proc/sys/kernel/osrelease; then
+  echo "WSL is not supported by this guide." >&2
+  exit 1
+fi
+. /etc/os-release
+test "${ID:-}" = debian
+test "${VERSION_ID:-}" = 13
+test "$(uname -m)" = x86_64
+test -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}"
+printf '%s\n' "$PRETTY_NAME" "$(uname -m)"
+~~~
+
+確認に失敗した場合は導入を中止します。
+既存の環境を上書きせず、Python 3.12の専用conda環境を作ります。
+
+~~~bash
+set -euo pipefail
+env_name=gwexpy-studio-debian13
+if ! env_list="$(conda env list)"; then
+  echo "conda env list failed; stop." >&2
+  exit 1
+fi
+if printf '%s\n' "$env_list" | awk -v name="$env_name" \
+  '$1 == name { found=1 } END { exit found ? 0 : 1 }'; then
+  echo "conda environment already exists: $env_name" >&2
+  exit 1
+fi
+conda create -n "$env_name" python=3.12 pip
+conda activate "$env_name"
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+python - <<'PY'
+import platform
+import sys
+
+assert sys.version_info[:2] == (3, 12)
+assert platform.machine() == "x86_64"
+PY
+python --version
+conda --version
+python -m pip --version
+~~~
+
+試用中はこの環境を有効にしたままにします。
+別の端末を開く場合は、環境を再び有効にし、`PYTHONNOUSERSITE=1`を設定して`PYTHONPATH`を解除します。
+Qtの画面表示用ライブラリを確認します。
+不足があれば記載したDebianパッケージを導入し、同じ確認を再実行します。
+
+~~~bash
+set -euo pipefail
+probe_runtime() {
+  python - <<'PY'
+import ctypes
+
+libraries = (
+    "libEGL.so.1", "libGL.so.1", "libfontconfig.so.1", "libglib-2.0.so.0",
+    "libdbus-1.so.3", "libxkbcommon.so.0", "libzstd.so.1", "libX11-xcb.so.1",
+    "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
+    "libxcb-randr.so.0", "libxcb-render-util.so.0",
+    "libxcb-shape.so.0", "libxcb-shm.so.0", "libxcb-sync.so.1",
+    "libxcb-xfixes.so.0", "libxcb-xkb.so.1", "libxkbcommon-x11.so.0",
+    "libSM.so.6", "libICE.so.6", "libwayland-client.so.0",
+    "libwayland-cursor.so.0", "libxcb-keysyms.so.1",
+)
+missing = []
+for library in libraries:
+    try:
+        ctypes.CDLL(library)
+    except OSError:
+        missing.append(library)
+if missing:
+    print("Missing runtime libraries:", " ".join(missing))
+    raise SystemExit(1)
+print("Qt display runtime: OK")
+PY
+}
+
+if probe_runtime; then
+  :
+else
+  packages=(
+    libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libdbus-1-3
+    libxkbcommon0 libzstd1 libx11-xcb1 libxcb-cursor0 libxcb-icccm4
+    libxcb-keysyms1 libxcb-randr0 libxcb-shape0 libxcb-sync1
+    libxcb-xfixes0 libxkbcommon-x11-0 libsm6 libwayland-cursor0
+  )
+  sudo apt-get update
+  sudo apt-get install --no-install-recommends -y "${packages[@]}"
+  probe_runtime
+fi
+~~~
+
+Debian用constraintsと配布物内のwheel一つを使ってインストールし、Studioを起動します。
+
+~~~bash
+set -euo pipefail
+shopt -s nullglob
+wheels=(gwexpy_studio-*.whl)
+test "${#wheels[@]}" -eq 1
+test -f constraints-debian13-x86_64.txt
+python -m pip install --only-binary=:all: \
+  -c constraints-debian13-x86_64.txt \
+  "./${wheels[0]}"
+gwexpy-studio
+~~~
+
+別のライブラリの不足やインストール失敗が表示された場合は、エラーと失敗した段階を記録します。
+詳しい診断は[Debian Quick Start](trial/debian/Quick-Start.ja.md)を参照してください。
+
+</details>
+
+<details>
 <summary>macOS 15以上 / Apple Silicon</summary>
 
 この経路は、macos15-arm64 assetが同じReleaseに含まれる場合だけ使います。
@@ -223,11 +367,27 @@ Historyには timeseries.crop と timeseries.asd が記録されます。
 
 ![保存したprojectを再オープンした画面](images/installation/04-reopen-project.png)
 
-**File → Save Project** で .gwxproj を保存し、Studioを閉じてから再起動します。
+**File → Save** で .gwxproj を保存し、Studioを閉じてから再起動します。
 再オープン直後に **Review / Restore Data** が必要な場合は、表示された確認手順を選びます。
 projectはsource reference、operation、active state、view state、Undo/Redoの位置を保存します。
 
-## 5. 最低限の確認
+## 5. 試用版で利用できるデータを読む
+
+試用版では一覧のルートで元データを読み込みますが、元ファイルへ書き戻しません。
+
+| data type | formatとreader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`、`TimeSeriesDict` | GWF：`gwf.lalframe`（推奨）、`gwf`も選択可能 |
+| `TimeSeries`、`TimeSeriesDict`、`TimeSeriesMatrix` | DiagGUI XML：`xml.diaggui`、product `TS` |
+| `TimeSeries`、`TimeSeriesDict` | NDScope HDF5：`hdf.ndscope` |
+
+**Open Data**でdata typeとformatを選び、**Inspect / Review**で内容を確認してから、明示的に**Read Data**を押します。
+ファイルをドロップすると汎用の**Open Data** formに入力されますが、data typeやformatの自動判別も読込開始も行いません。
+
+GWexpy 0.2.0では、DiagGUI XMLから`FrequencySeries`、`FrequencySeriesDict`、`FrequencySeriesMatrix`への読込は現在利用できず、fail-closedで扱います。
+
+## 6. 最低限の確認
 
 起動した環境で、次を実行します。
 
@@ -247,7 +407,8 @@ WSL2では、/mnt/wslg と powershell.exe が使えることを再確認しま�
 
 詳細なqualification条件、診断記録、フィードバック形式が必要な場合だけ、次の補足資料を使います。
 
-- [Ubuntu Quick Start](Quick-Start.ja.md)
+- [Ubuntu Quick Start](trial/ubuntu/Quick-Start.ja.md)
+- [Debian Quick Start](trial/debian/Quick-Start.ja.md)
 - [WSL2 Quick Start](trial/wsl2/Quick-Start.ja.md)
 - [macOS Quick Start](trial/macos/Quick-Start.ja.md)
 

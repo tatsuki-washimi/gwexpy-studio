@@ -1,7 +1,7 @@
 # GWexpy Studio macOS trial quick start
 
 This page is for participants using the verified macOS trial ZIP.
-For a source checkout, use the [source installation guide](../../installation.md) instead; do not mix the two routes.
+This guide covers the macOS trial bundle only. Do not mix it with a source installation.
 
 This guide applies only to the `macos15-arm64` prerelease on an Apple Silicon Mac running macOS 15 or later.
 Do not use it on an Intel Mac, WSL2, or Linux.
@@ -144,10 +144,25 @@ When the application is visible, run:
 
 Use the file selection window for Save and Open, including a save location containing Japanese characters and spaces.
 Record display-scaling problems if they appear.
-This distribution checks reading of time-series CSV files.
-Unsupported types are shown as unavailable in the application.
+
 Record Review or Restore only if it is shown, including whether continuation worked.
 Open About and record the Build ID.
+
+## Supported trial reads
+
+The trial supports these read routes:
+
+| Data type | Format and reader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`, `TimeSeriesDict` | GWF: `gwf.lalframe` (recommended); `gwf` (also selectable) |
+| `TimeSeries`, `TimeSeriesDict`, `TimeSeriesMatrix` | DiagGUI XML: `xml.diaggui`, product `TS` |
+| `TimeSeries`, `TimeSeriesDict` | NDScope HDF5: `hdf.ndscope` |
+
+The trial reads source files through these routes and does not write back to them. In **Open Data**, choose the data type and format, press **Inspect / Review**, review the result, and then explicitly press **Read Data**.
+Dragging a file only fills the generic **Open Data** form; it does not identify the data type or format, or start a read.
+
+On GWexpy 0.2.0, DiagGUI XML reads into `FrequencySeries`, `FrequencySeriesDict`, and `FrequencySeriesMatrix` are currently unavailable and fail closed.
 
 Record the result of the normal Save → Close → Open sequence.
 If launch, reopen, or recovery cannot continue, contact the trial coordinator with the error shown and the operation immediately before it.

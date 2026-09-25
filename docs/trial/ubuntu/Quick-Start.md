@@ -190,9 +190,21 @@ operation immediately before it, then contact the person who provided this
 guide. Before sending it, hide usernames, hostnames, personal save locations,
 credentials, and confidential measurement data.
 
-This release supports reading `TimeSeries` data from CSV. Other file formats
-and I/O operations may be unavailable. Follow the message shown by the
-application.
+## Supported trial reads
+
+The trial supports these read routes:
+
+| Data type | Format and reader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`, `TimeSeriesDict` | GWF: `gwf.lalframe` (recommended); `gwf` (also selectable) |
+| `TimeSeries`, `TimeSeriesDict`, `TimeSeriesMatrix` | DiagGUI XML: `xml.diaggui`, product `TS` |
+| `TimeSeries`, `TimeSeriesDict` | NDScope HDF5: `hdf.ndscope` |
+
+The trial reads source files through these routes and does not write back to them. In **Open Data**, choose the data type and format, press **Inspect / Review**, review the result, and then explicitly press **Read Data**.
+Dragging a file only fills the generic **Open Data** form; it does not identify the data type or format, or start a read.
+
+On GWexpy 0.2.0, DiagGUI XML reads into `FrequencySeries`, `FrequencySeriesDict`, and `FrequencySeriesMatrix` are currently unavailable and fail closed.
 
 ## Report feedback
 

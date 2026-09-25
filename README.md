@@ -24,26 +24,21 @@ The source route resolves the package dependencies for development or local eval
 The trial is distributed as a target-specific ZIP and a matching outer checksum
 sidecar.
 
-The candidate documents cover `ubuntu24-x86_64`, `debian13-x86_64`,
-`wsl2-ubuntu24`, and `macos15-arm64`.
+Candidate guides cover `ubuntu24-x86_64`, `debian13-x86_64`,
+`wsl2-ubuntu24`, and `macos15-arm64`. Candidate guides are documentation only;
+published assets and their live status are listed on [GitHub Releases](https://github.com/tatsuki-washimi/gwexpy-studio/releases).
 
 The presence of a guide does not mean that its target is published or qualified.
 Use only the verified Release explicitly named by the sender.
 
 Download the ZIP and checksum sidecar with the same Build ID.
-Verify both the outer and inner checksums, then continue with the platform section in the [installation guide](docs/installation.md) or the Quick Start for the target named by the sender.
+Verify both the outer and inner checksums, then follow the matching platform section in the [installation guide](docs/installation.md).
 
 Participants need conda with Python 3.12, but do not need Git, a source
 checkout, an editable install, or a GitHub account.
 
-Use the Quick Start for the target named by the sender.
-It checks the exact ZIP, wheel, and constraints files supplied in that bundle,
-creates a dedicated conda environment, and keeps the operating system Python
-unchanged.
-
 The target guides are under [docs/trial](docs/trial).
-After publication, use the external distribution list to confirm the current
-Release and the OS version actually tested.
+Use the matching published Release and confirm its tested OS version before installing.
 
 The ZIP contains the wheel, constraints, checksums, build identity, target
 Quick Start, and Japanese feedback form.
@@ -89,6 +84,20 @@ Source data and computed arrays stay outside the project file.
 ## I/O availability
 
 Registered GWexpy formats are not automatically available in a trial build.
+
+The trial enables these read routes:
+
+| Data type | Format and reader |
+| --- | --- |
+| `TimeSeries` | CSV |
+| `TimeSeries`, `TimeSeriesDict` | GWF: `gwf.lalframe` (recommended); `gwf` (also selectable) |
+| `TimeSeries`, `TimeSeriesDict`, `TimeSeriesMatrix` | DiagGUI XML: `xml.diaggui`, product `TS` |
+| `TimeSeries`, `TimeSeriesDict` | NDScope HDF5: `hdf.ndscope` |
+
+The trial reads source files through these routes and does not write back to them. In **Open Data**, choose the data type and format, press **Inspect / Review**, review the result, and then explicitly press **Read Data**.
+Dropping a file only fills the generic **Open Data** form; it does not identify the data type or format, or start a read.
+
+On GWexpy 0.2.0, DiagGUI XML reads into `FrequencySeries`, `FrequencySeriesDict`, and `FrequencySeriesMatrix` are currently unavailable and fail closed.
 
 The UI will present each data type, format, and direction as one of:
 
