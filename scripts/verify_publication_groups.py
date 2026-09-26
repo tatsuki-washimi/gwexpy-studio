@@ -15,6 +15,7 @@ import io
 import json
 import re
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -182,7 +183,9 @@ def _repository(run: Mapping[str, object]) -> str:
 
 
 def _run_identity(
-    run: Mapping[str, object], *, repository: str, default_branch: str
+    run: Mapping[str, object], *, repository: str, default_branch: str,
+    candidate_branch: str | None = None,
+    candidate_sha: str | None = None,
 ) -> dict[str, object]:
     """Validate the immutable GitHub Build run facts used by the summary."""
     if run.get("path") != _WORKFLOW_PATH:
@@ -191,14 +194,22 @@ def _run_identity(
         raise _invalid("Build was not manually dispatched")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise _invalid("Build workflow did not complete successfully")
-    if run.get("head_branch") != default_branch:
-        raise _invalid("Build did not run on the default branch")
+    if (candidate_branch is None) != (candidate_sha is None):
+        raise _invalid("candidate branch and SHA must be supplied together")
+    if candidate_branch is not None:
+        _require_candidate_branch(candidate_branch)
+        _source(candidate_sha)
+    expected_branch = candidate_branch or default_branch
+    if run.get("head_branch") != expected_branch:
+        raise _invalid("Build did not run on the reviewed branch")
     if _repository(run) != repository:
         raise _invalid("Build repository does not match trusted repository")
     run_id = _positive_int(run.get("id"), "Build run ID")
     run_number = _positive_int(run.get("run_number"), "Build run number")
     run_attempt = _positive_int(run.get("run_attempt"), "Build run attempt")
     source_sha = _source(run.get("head_sha"))
+    if candidate_sha is not None and source_sha != candidate_sha:
+        raise _invalid("Build does not match reviewed candidate SHA")
     return {
         "repository": repository,
         "run_attempt": run_attempt,
@@ -335,6 +346,8 @@ def _verify_target_build(
     *,
     repository: str,
     default_branch: str,
+    candidate_branch: str | None = None,
+    candidate_sha: str | None = None,
 ) -> dict[str, object]:
     if set(record) != _BUILD_RECORD_FIELDS:
         raise _invalid("Build input fields are invalid")
@@ -343,7 +356,13 @@ def _verify_target_build(
     except TrialTargetError as exc:
         raise _invalid("Build target is invalid") from exc
     run = _mapping(record.get("run"), "Build run")
-    workflow = _run_identity(run, repository=repository, default_branch=default_branch)
+    workflow = _run_identity(
+        run,
+        repository=repository,
+        default_branch=default_branch,
+        candidate_branch=candidate_branch,
+        candidate_sha=candidate_sha,
+    )
     run_id = cast(int, workflow["run_id"])
     run_attempt = cast(int, workflow["run_attempt"])
     release_name = f"trial-bundle-{target_id}-{run_id}-a{run_attempt}"
@@ -532,7 +551,11 @@ def _build_summary(
     default_branch: str,
     kind: str,
     publication_group: str | None,
+    candidate_branch: str | None = None,
+    candidate_sha: str | None = None,
 ) -> bytes:
+    if (candidate_branch is None) != (candidate_sha is None):
+        raise _invalid("candidate branch and SHA must be supplied together")
     if set(builds) != set(targets) or set(qualification_results) != set(targets):
         raise _invalid("Build or qualification target set is incomplete or extra")
     expected_builds: dict[str, dict[str, object]] = {}
@@ -544,6 +567,8 @@ def _build_summary(
             record,
             repository=repository,
             default_branch=default_branch,
+            candidate_branch=candidate_branch,
+            candidate_sha=candidate_sha,
         )
         expected_builds[target_id] = expected
         source_shas.add(cast(str, expected["source_sha"]))
@@ -587,6 +612,8 @@ def publication_group_summary_bytes(
     qualification_results: Mapping[str, object],
     repository: str,
     default_branch: str,
+    candidate_branch: str | None = None,
+    candidate_sha: str | None = None,
 ) -> bytes:
     """Return one exact schema-2 publication-group summary."""
     if group_id not in _GROUP_TARGETS:
@@ -603,6 +630,8 @@ def publication_group_summary_bytes(
         default_branch=default_branch,
         kind="publication-group",
         publication_group=group_id,
+        candidate_branch=candidate_branch,
+        candidate_sha=candidate_sha,
     )
 
 
@@ -612,6 +641,8 @@ def audit_summary_bytes(
     qualification_results: Mapping[str, object],
     repository: str,
     default_branch: str,
+    candidate_branch: str | None = None,
+    candidate_sha: str | None = None,
 ) -> bytes:
     """Return the distinct all-five-configuration audit summary."""
     return _build_summary(
@@ -622,6 +653,215 @@ def audit_summary_bytes(
         default_branch=default_branch,
         kind="audit",
         publication_group=None,
+        candidate_branch=candidate_branch,
+        candidate_sha=candidate_sha,
+    )
+
+
+def candidate_qualification_summary_bytes(
+    physical_summary: bytes,
+    *,
+    candidate_branch: str,
+    source_sha: str,
+    target_id: str,
+    build_run_id: int,
+    release_artifact_id: int,
+    release_artifact_digest: str,
+) -> bytes:
+    """Bind a complete physical audit and selected release to a candidate."""
+    _require_candidate_branch(candidate_branch)
+    _candidate_selected_build(
+        physical_summary,
+        source_sha=source_sha,
+        target_id=target_id,
+        build_run_id=build_run_id,
+        release_artifact_id=release_artifact_id,
+        release_artifact_digest=release_artifact_digest,
+    )
+    return _canonical_json(
+        {
+            "schema": 3,
+            "candidate_branch": candidate_branch,
+            "source_sha": source_sha,
+            "status": "passed",
+            "selected_target_id": target_id,
+            "build_run_id": build_run_id,
+            "release_artifact_id": release_artifact_id,
+            "release_artifact_digest": release_artifact_digest,
+            "qualification_summary_sha256": hashlib.sha256(
+                physical_summary
+            ).hexdigest(),
+        }
+    )
+
+
+def _candidate_selected_build(
+    physical_summary: bytes,
+    *,
+    source_sha: object,
+    target_id: object,
+    build_run_id: object,
+    release_artifact_id: object,
+    release_artifact_digest: object,
+) -> None:
+    """Verify all four audit targets and one exact Build release artifact."""
+    physical = read_publication_summary(physical_summary, kind="audit")
+    if physical["source_sha"] != _source(source_sha):
+        raise _invalid("candidate source differs from physical audit")
+    if not isinstance(target_id, str):
+        raise _invalid("selected target is invalid")
+    run_id = _positive_int(build_run_id, "selected Build run ID")
+    artifact_id = _positive_int(release_artifact_id, "selected release artifact ID")
+    if (
+        not isinstance(release_artifact_digest, str)
+        or _ARTIFACT_DIGEST.fullmatch(release_artifact_digest) is None
+    ):
+        raise _invalid("selected release artifact digest is invalid")
+    rows = cast(list[dict[str, object]], physical["targets"])
+    selected = next((row for row in rows if row["target_id"] == target_id), None)
+    if selected is None:
+        raise _invalid("selected target is absent from physical audit")
+    workflow = cast(dict[str, object], selected["workflow"])
+    release = cast(dict[str, dict[str, object]], selected["artifacts"])["release"]
+    if (
+        workflow["run_id"] != run_id
+        or release["id"] != artifact_id
+        or release["digest"] != release_artifact_digest
+    ):
+        raise _invalid("selected Build or artifact differs from physical audit")
+
+
+def _require_candidate_branch(candidate_branch: object) -> None:
+    if (
+        not isinstance(candidate_branch, str)
+        or re.fullmatch(r"candidate/[A-Za-z0-9._/-]+", candidate_branch) is None
+        or any(part in {"", ".", ".."} for part in candidate_branch.split("/"))
+    ):
+        raise _invalid("candidate branch is invalid")
+
+
+def read_candidate_qualification_summary(
+    raw: bytes, physical_summary: bytes
+) -> dict[str, object]:
+    """Read schema 3 against complete schema-2 bytes and selected Build."""
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _invalid("candidate summary is invalid JSON") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document)
+        != {
+            "schema",
+            "candidate_branch",
+            "source_sha",
+            "status",
+            "qualification_summary_sha256",
+            "selected_target_id",
+            "build_run_id",
+            "release_artifact_id",
+            "release_artifact_digest",
+        }
+        or document.get("schema") != 3
+        or document.get("status") != "passed"
+        or _canonical_json(document) != raw
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(document.get("qualification_summary_sha256"))
+        )
+        is None
+    ):
+        raise _invalid("candidate summary is not canonical schema 3")
+    _require_candidate_branch(document["candidate_branch"])
+    if (
+        hashlib.sha256(physical_summary).hexdigest()
+        != document["qualification_summary_sha256"]
+    ):
+        raise _invalid("physical summary digest differs from candidate summary")
+    _candidate_selected_build(
+        physical_summary,
+        source_sha=document["source_sha"],
+        target_id=document["selected_target_id"],
+        build_run_id=document["build_run_id"],
+        release_artifact_id=document["release_artifact_id"],
+        release_artifact_digest=document["release_artifact_digest"],
+    )
+    return cast(dict[str, object], document)
+
+
+def verify_candidate_build_run_provenance(
+    candidate_summary: bytes,
+    physical_summary: bytes,
+    *,
+    repository: str,
+    runs: Mapping[int, Mapping[str, object]],
+) -> None:
+    """Bind every physical Build record to its live candidate branch and SHA."""
+    candidate = read_candidate_qualification_summary(
+        candidate_summary, physical_summary
+    )
+    physical = read_publication_summary(physical_summary, kind="audit")
+    source_sha = cast(str, candidate["source_sha"])
+    branch = cast(str, candidate["candidate_branch"])
+    rows = cast(list[dict[str, object]], physical["targets"])
+    expected: dict[int, Mapping[str, object]] = {}
+    for row in rows:
+        workflow = cast(Mapping[str, object], row["workflow"])
+        run_id = cast(int, workflow["run_id"])
+        if run_id in expected:
+            raise _invalid("candidate Build run IDs are duplicated")
+        if workflow["repository"] != repository or workflow["source_sha"] != source_sha:
+            raise _invalid("candidate Build repository or SHA differs from audit")
+        expected[run_id] = workflow
+    if set(runs) != set(expected):
+        raise _invalid("candidate Build run set differs from audit")
+    for run_id, workflow in expected.items():
+        if not isinstance(runs[run_id], Mapping):
+            raise _invalid("candidate Build run response is invalid")
+        identity = _run_identity(
+            runs[run_id],
+            repository=repository,
+            default_branch="",
+            candidate_branch=branch,
+            candidate_sha=source_sha,
+        )
+        if identity != workflow:
+            raise _invalid("candidate Build run identity differs from audit")
+
+
+def fetch_candidate_build_run_provenance(
+    candidate_summary: bytes, physical_summary: bytes, *, repository: str
+) -> None:
+    """Requery all audited Build runs; intended for both Publish jobs."""
+    read_candidate_qualification_summary(candidate_summary, physical_summary)
+    physical = read_publication_summary(physical_summary, kind="audit")
+    rows = cast(list[dict[str, object]], physical["targets"])
+    runs: dict[int, Mapping[str, object]] = {}
+    for row in rows:
+        workflow = cast(Mapping[str, object], row["workflow"])
+        run_id = cast(int, workflow["run_id"])
+        if run_id in runs:
+            raise _invalid("candidate Build run IDs are duplicated")
+        try:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "-H",
+                    "X-GitHub-Api-Version: 2022-11-28",
+                    f"repos/{repository}/actions/runs/{run_id}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            run = json.loads(result.stdout)
+        except (subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
+            raise _invalid("candidate Build run could not be fetched") from exc
+        if not isinstance(run, Mapping):
+            raise _invalid("candidate Build run response is invalid")
+        runs[run_id] = run
+    verify_candidate_build_run_provenance(
+        candidate_summary, physical_summary, repository=repository, runs=runs
     )
 
 
@@ -827,15 +1067,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         descriptor = _json_no_duplicates(args.input.read_text(encoding="utf-8"))
         if not isinstance(descriptor, Mapping):
             raise _invalid("verifier input is invalid")
-        if set(descriptor) != {
+        expected_fields = {
             "builds",
             "default_branch",
             "qualification_results",
             "repository",
-        }:
+        }
+        if "candidate_branch" in descriptor or "candidate_sha" in descriptor:
+            expected_fields.update({"candidate_branch", "candidate_sha"})
+        if set(descriptor) != expected_fields:
             raise _invalid("verifier input fields are invalid")
         repository = descriptor.get("repository")
         default_branch = descriptor.get("default_branch")
+        candidate_branch = descriptor.get("candidate_branch")
+        candidate_sha = descriptor.get("candidate_sha")
+        if "candidate_branch" in descriptor:
+            _require_candidate_branch(candidate_branch)
+            _source(candidate_sha)
         builds = descriptor.get("builds")
         result_paths = descriptor.get("qualification_results")
         if not isinstance(result_paths, Mapping) or not isinstance(builds, Mapping):
@@ -860,6 +1108,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 qualification_results=results,
                 repository=repository,
                 default_branch=default_branch,
+                candidate_branch=candidate_branch,
+                candidate_sha=candidate_sha,
             )
         else:
             summary = publication_group_summary_bytes(
@@ -868,6 +1118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 qualification_results=results,
                 repository=repository,
                 default_branch=default_branch,
+                candidate_branch=candidate_branch,
+                candidate_sha=candidate_sha,
             )
         _write_fresh_pair(args.output, summary)
     except (OSError, UnicodeError, PublicationGroupError) as exc:

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from scripts.release_source_manifest import ManifestEntry, ReleaseSourceManifest
+from tests.support.trial_io_policy import trial_io_policy_document
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +26,8 @@ _M2_RUNTIME_REQUIREMENTS = (
     "scipy<2.0.0,>=1.15.0",
     "astropy<9.0.0,>=7.0.0",
     "matplotlib<4.0.0,>=3.10.0",
+    "lalsuite",
+    "dttxml",
 )
 _M2_DEV_REQUIREMENTS = (
     "setuptools>=68",
@@ -164,19 +167,7 @@ def _write_trial_inputs(tmp_path: Path) -> dict[str, Path]:
     )
     repository_scripts = Path(__file__).resolve().parents[2] / "scripts"
     source_version = b'__version__ = "0.1.0a1"\n'
-    capability_policy = _canonical_json(
-        {
-            "entries": [
-                {
-                    "datatype": "TimeSeries",
-                    "direction": "read",
-                    "format": "csv",
-                    "tier": "A",
-                }
-            ],
-            "schema_version": 1,
-        }
-    )
+    capability_policy = _canonical_json(trial_io_policy_document())
     source_license = b"fixture license\n"
     quick_start = tmp_path / "Quick-Start.md"
     quick_start.write_text("# Quick start\n", encoding="utf-8")

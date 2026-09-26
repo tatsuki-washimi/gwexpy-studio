@@ -19,7 +19,7 @@ def test_quick_start_is_a_short_complete_trial_path() -> None:
         "Try Sample",
         "Crop",
         "ASD",
-        "Save Project",
+        "File → Save, then",
         "Open Project",
     ):
         assert phrase in text

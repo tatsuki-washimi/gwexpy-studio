@@ -6,11 +6,14 @@ import hashlib
 import importlib
 import json
 import subprocess
+import tomllib
 import zipfile
 from base64 import urlsafe_b64encode
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from scripts.export_release_source import export_release_source
@@ -172,6 +175,41 @@ def test_trial_identity_is_derived_and_rejects_unsafe_inputs() -> None:
         arguments.update(kwargs)
         with pytest.raises(builder.TrialBuildError, match=label):
             builder.derive_trial_identity(**arguments)
+
+
+@pytest.mark.contract("REL-IOC-029")
+def test_reader_backend_dependencies_are_normal_and_static_trial_requirements() -> None:
+    builder = _builder()
+    project = tomllib.loads(
+        (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    required = {"lalsuite", "dttxml"}
+    for requirements in (
+        project["project"]["dependencies"],
+        builder._TRIAL_PROJECT_DEPENDENCIES,
+    ):
+        assert required <= {
+            canonicalize_name(Requirement(value).name) for value in requirements
+        }
+
+
+def test_trial_capability_policy_covers_reviewed_native_read_routes() -> None:
+    builder = _builder()
+    document = json.loads(
+        (REPOSITORY_ROOT / "packaging/trial-io-capabilities.json").read_bytes()
+    )
+    assert document == builder._TRIAL_CAPABILITY_POLICY
+    entries = {(item["datatype"], item["format"]): item for item in document["entries"]}
+    for datatype in ("TimeSeries", "TimeSeriesDict"):
+        for format_name in ("gwf", "gwf.lalframe", "hdf.ndscope", "xml.diaggui"):
+            assert entries[(datatype, format_name)]["tier"] == "A"
+    assert entries[("TimeSeriesMatrix", "xml.diaggui")]["tier"] == "A"
+    for datatype in (
+        "FrequencySeries",
+        "FrequencySeriesDict",
+        "FrequencySeriesMatrix",
+    ):
+        assert entries[(datatype, "xml.diaggui")]["reason"] == "native_error"
 
 
 def test_trial_identity_preserves_an_all_numeric_short_sha() -> None:

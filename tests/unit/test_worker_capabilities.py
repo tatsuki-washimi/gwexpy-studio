@@ -102,13 +102,17 @@ def test_worker_probe_intersects_policy_with_registry_and_preserves_missing_entr
             },
         ]
     )
+    io_module = _io_module(registry)
+    io_module._GWF_READER_ROUTES = ("gwf.lalframe", "gwf")
     snapshot = probe_effective_capabilities(
         _manifest(
             _entry("ready", "A"),
             _entry("limited", "B", caveat="Name is not saved"),
             _entry("gone", "A"),
+            _entry("gwf.lalframe", "A"),
+            _entry("gwf", "A"),
         ),
-        io_module=_io_module(registry),
+        io_module=io_module,
     )
 
     assert snapshot.policy_digest == "a" * 64
@@ -138,6 +142,11 @@ def test_worker_probe_intersects_policy_with_registry_and_preserves_missing_entr
         snapshot.capability("TimeSeries", "unreviewed", "read").reason
         == "unreviewed_registry_entry"
     )
+    for format_name in ("gwf.lalframe", "gwf"):
+        alias = snapshot.capability("TimeSeries", format_name, "read")
+        assert alias.available
+        assert alias.native_available
+        assert not alias.auto_identify
 
 
 @pytest.mark.contract("REL-IOC-017")

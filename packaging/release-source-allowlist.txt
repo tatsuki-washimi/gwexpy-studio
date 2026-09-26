@@ -35,6 +35,8 @@ include docs/Quick-Start.md
 include docs/Quick-Start.ja.md
 include docs/Feedback.ja.md
 include docs/trial/**
+# Internal feedback intake and issue templates never enter public source.
+exclude docs/feedback/**
 include scripts/package_trial_release.py
 include scripts/verify_trial_release.py
 include docs/release/**
@@ -71,6 +73,7 @@ include scripts/verify_trial_seed.py
 include scripts/extract_trial_artifact.py
 include scripts/verify_publication_groups.py
 exclude scripts/capture_alpha_trial.py
+exclude scripts/compose_public_candidate.py
 exclude scripts/build_appimage.py
 exclude scripts/build_standalone.py
 exclude scripts/artifact_inventory.py
@@ -108,6 +111,7 @@ include tests/architecture/**
 include tests/e2e/**
 include tests/integration/**
 include tests/release/**
+exclude tests/release/test_compose_public_candidate.py
 exclude tests/release/test_appimage_layout.py
 exclude tests/release/test_artifact_inventory.py
 exclude tests/release/test_artifact_tree_manifest.py

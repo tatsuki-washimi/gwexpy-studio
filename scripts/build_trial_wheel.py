@@ -82,6 +82,8 @@ _TRIAL_PROJECT_DEPENDENCIES = (
     "gwpy>=4.0.0,<5.0.0",
     "numpy>=2.0.0,<3.0.0",
     "scipy>=1.15.0,<2.0.0",
+    "dttxml",
+    "lalsuite",
     "astropy>=7.0.0,<9.0.0",
     "matplotlib>=3.10.0,<4.0.0",
 )
@@ -117,11 +119,81 @@ _TRIAL_CAPABILITY_POLICY = {
     "schema_version": 1,
     "entries": [
         {
+            "datatype": "FrequencySeries",
+            "format": "xml.diaggui",
+            "direction": "read",
+            "tier": "C",
+            "reason": "native_error",
+        },
+        {
+            "datatype": "FrequencySeriesDict",
+            "format": "xml.diaggui",
+            "direction": "read",
+            "tier": "C",
+            "reason": "native_error",
+        },
+        {
+            "datatype": "FrequencySeriesMatrix",
+            "format": "xml.diaggui",
+            "direction": "read",
+            "tier": "C",
+            "reason": "native_error",
+        },
+        {
             "datatype": "TimeSeries",
             "format": "csv",
             "direction": "read",
             "tier": "A",
-        }
+        },
+        {"datatype": "TimeSeries", "format": "gwf", "direction": "read", "tier": "A"},
+        {
+            "datatype": "TimeSeries",
+            "format": "gwf.lalframe",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeries",
+            "format": "hdf.ndscope",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeries",
+            "format": "xml.diaggui",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeriesDict",
+            "format": "gwf",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeriesDict",
+            "format": "gwf.lalframe",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeriesDict",
+            "format": "hdf.ndscope",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeriesDict",
+            "format": "xml.diaggui",
+            "direction": "read",
+            "tier": "A",
+        },
+        {
+            "datatype": "TimeSeriesMatrix",
+            "format": "xml.diaggui",
+            "direction": "read",
+            "tier": "A",
+        },
     ],
 }
 

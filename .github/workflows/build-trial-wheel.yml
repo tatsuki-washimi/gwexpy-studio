@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact 40-character public default-branch commit SHA (P).
+        description: Exact 40-character dispatched public branch commit SHA.
         required: true
         type: string
       trial_target:
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - name: Bind dispatch to default-branch P and a supported target
+      - name: Bind dispatch to public branch HEAD and a supported target
         shell: bash
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -50,10 +50,11 @@ jobs:
           source_sha = os.environ["SOURCE_SHA"]
           if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
               raise SystemExit("source_sha must be a lowercase 40-character Git SHA")
-          if os.environ["GITHUB_REF"] != "refs/heads/" + os.environ["DEFAULT_BRANCH"]:
-              raise SystemExit("dispatch the build from the default branch")
+          branch = os.environ["GITHUB_REF"]
+          if branch != "refs/heads/" + os.environ["DEFAULT_BRANCH"] and re.fullmatch(r"refs/heads/candidate/[A-Za-z0-9._/-]+", branch) is None:
+              raise SystemExit("dispatch the build from default or candidate branch")
           if source_sha != os.environ["GITHUB_SHA"]:
-              raise SystemExit("source_sha must equal the dispatched default-branch HEAD")
+              raise SystemExit("source_sha must equal the dispatched branch HEAD")
           if os.environ["TRIAL_TARGET"] not in {
               "debian13-x86_64",
               "macos15-arm64",

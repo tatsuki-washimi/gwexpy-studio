@@ -23,6 +23,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+TRIAL_IO_FIXTURE_ENV = "GWEXPY_STUDIO_TRIAL_IO_FIXTURES"
+
 
 def _gate():
     return importlib.import_module("scripts.run_trial_technical_gate")
@@ -115,6 +117,71 @@ def test_gate_qapplication_arguments_use_a_concrete_list() -> None:
 
     assert type(arguments) is list
     assert arguments == [sys.argv[0]]
+
+
+@pytest.mark.integration
+@pytest.mark.contract("REL-IOC-026")
+@pytest.mark.parametrize(
+    ("datatype", "format_name"),
+    [
+        ("TimeSeries", "gwf.lalframe"),
+        ("TimeSeries", "gwf"),
+        ("TimeSeriesDict", "gwf.lalframe"),
+        ("TimeSeriesDict", "gwf"),
+        ("TimeSeries", "hdf.ndscope"),
+        ("TimeSeriesDict", "hdf.ndscope"),
+    ],
+)
+def test_trial_gate_read_evidence_covers_real_gwf_and_ndscope_files(
+    datatype: str, format_name: str, tmp_path: Path
+) -> None:
+    fixture_value = os.environ.get(TRIAL_IO_FIXTURE_ENV)
+    fixture_root = (
+        Path(fixture_value) if fixture_value else tmp_path / "generated-fixtures"
+    )
+    if fixture_value:
+        name = "ndscope.h5" if format_name == "hdf.ndscope" else "test.gwf"
+        if not (fixture_root / name).is_file():
+            pytest.fail(f"configured trial I/O fixture is missing: {name}")
+    from scripts import verify_signal_io
+
+    case = verify_signal_io.run_case(
+        datatype,
+        format_name,
+        tmp_path / "work",
+        fixture_root,
+        write=not bool(fixture_value),
+    )
+    assert case["read"]["status"] == "equivalent_success", case["read"]
+    assert case["read"]["direct"]["result"]["class"] == datatype
+    assert case["read"]["adapter"]["result"]["class"] == datatype
+
+
+@pytest.mark.integration
+@pytest.mark.contract("REL-IOC-027")
+@pytest.mark.parametrize(
+    "datatype", ["TimeSeries", "TimeSeriesDict", "TimeSeriesMatrix"]
+)
+def test_trial_gate_read_evidence_covers_real_diaggui_timeseries_products(
+    datatype: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import verify_signal_io
+    from tests.support.trial_io_fixtures import write_minimal_diaggui_timeseries
+
+    fixture_root = tmp_path / "fixtures"
+    fixture_root.mkdir()
+    source = write_minimal_diaggui_timeseries(fixture_root / "trial-ts.xml")
+    monkeypatch.setitem(verify_signal_io.FIXTURES, "xml.diaggui", source.name)
+    case = verify_signal_io.run_case(
+        datatype, "xml.diaggui", tmp_path / "work", fixture_root, write=False
+    )
+    assert case["read_kwargs"] == {"products": "TS"}
+    assert case["read"]["status"] == "equivalent_success", case["read"]
+
+
+@pytest.mark.contract("REL-IOC-028")
+def test_trial_gate_keeps_existing_csv_read_and_refusal_checks() -> None:
+    assert {"io_read", "io_refusal"} <= set(_gate()._CHECK_NAMES)
 
 
 def test_gate_stage_record_is_canonical_and_path_free(tmp_path: Path) -> None:

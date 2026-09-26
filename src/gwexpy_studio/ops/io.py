@@ -12,8 +12,31 @@ IO_CLASSES = tuple(
     for family in ("TimeSeries", "FrequencySeries", "Spectrogram")
     for suffix in ("", "Dict", "List", "Matrix")
 )
+_GWF_READER_ROUTES = ("gwf.lalframe", "gwf")
+_DIAGGUI_FORMATS = frozenset({"xml.diaggui", "dttxml"})
+_DIAGGUI_TIMESERIES_CLASSES = frozenset(
+    {"TimeSeries", "TimeSeriesDict", "TimeSeriesMatrix"}
+)
 _IO_INITIALIZED = False
 _IO_RESERVED = frozenset({"source", "target", "format", "args", "kwargs", "datatype"})
+
+
+def _format_sort_key(name: str) -> tuple[int, str]:
+    """Keep the preferred GWF route first without hiding native format names."""
+    preferred = {route: index for index, route in enumerate(_GWF_READER_ROUTES)}
+    return preferred.get(name, len(preferred)), name
+
+
+def _registered_reader(registry: Any, format_name: str, datatype: type) -> bool:
+    """Return whether one registry resolves an exact explicit reader route."""
+    getter = getattr(registry, "get_reader", None)
+    if not callable(getter):
+        return False
+    try:
+        getter(format_name, datatype)
+    except Exception:
+        return False
+    return True
 
 
 def io_class(class_name: str) -> type:
@@ -110,7 +133,7 @@ def _effective_io_catalog(
         "classes": list(IO_CLASSES),
         "datatype": datatype,
         "direction": direction,
-        "formats": [formats[key] for key in sorted(formats)],
+        "formats": [formats[key] for key in sorted(formats, key=_format_sort_key)],
         "gwexpy_version": str(gwexpy.__version__),
         "catalog_version": 1,
         "capability_mode": snapshot.mode,
@@ -132,7 +155,8 @@ def io_catalog(datatype: str = "TimeSeries", direction: str = "read") -> dict[st
         return _effective_io_catalog(manifest, datatype=datatype, direction=direction)
     cls = io_class(datatype)
     formats: dict[str, dict[str, Any]] = {}
-    for registry in _io_registries():
+    registries = _io_registries()
+    for registry in registries:
         table = registry.get_formats(cls, direction.title())
         for row in table:
             name = str(row["Format"])
@@ -151,6 +175,17 @@ def io_catalog(datatype: str = "TimeSeries", direction: str = "read") -> dict[st
                         "true",
                         "1",
                     )
+    if direction == "read":
+        for name in _GWF_READER_ROUTES:
+            if name in formats:
+                continue
+            if any(_registered_reader(registry, name, cls) for registry in registries):
+                formats[name] = {
+                    "format": name,
+                    "read": True,
+                    "write": False,
+                    "auto_identify": False,
+                }
     if manifest is not None:
         for name, item in formats.items():
             item["capabilities"] = {
@@ -167,7 +202,7 @@ def io_catalog(datatype: str = "TimeSeries", direction: str = "read") -> dict[st
         "classes": list(IO_CLASSES),
         "datatype": datatype,
         "direction": direction,
-        "formats": [formats[key] for key in sorted(formats)],
+        "formats": [formats[key] for key in sorted(formats, key=_format_sort_key)],
         "gwexpy_version": str(gwexpy.__version__),
         "catalog_version": 1,
         **(
@@ -234,6 +269,15 @@ def read_data(
     ):
         raise ValueError("Choose a source or an ordered nonempty source list")
     call_args, call_kwargs = _io_options(args, kwargs)
+    if (
+        class_name in _DIAGGUI_TIMESERIES_CLASSES
+        and (format is None or format in _DIAGGUI_FORMATS)
+        and "products" in call_kwargs
+        and call_kwargs["products"] != "TS"
+    ):
+        raise ValueError(
+            "DiagGUI XML reads into TimeSeries classes require products='TS'"
+        )
     manifest = _capability_manifest()
     if format and manifest is not None:
         manifest.require(class_name, format, "read")
@@ -252,6 +296,8 @@ def read_data(
         manifest.require(class_name, format, "read")
     if format:
         call_kwargs["format"] = format
+        if format in _DIAGGUI_FORMATS and class_name in _DIAGGUI_TIMESERIES_CLASSES:
+            call_kwargs.setdefault("products", "TS")
     if class_name in ("SpectrogramDict", "SpectrogramList"):
         instance = cls()
         result = instance.read(source, *call_args, **call_kwargs)
@@ -355,9 +401,5 @@ def _automatic_selection_error(found: set[str]) -> ValueError:
     """Build the existing public auto-identification failure without path data."""
     return ValueError(
         "Select a format explicitly: native automatic identification is "
-        + (
-            "ambiguous (" + ", ".join(sorted(found)) + ")"
-            if found
-            else "unavailable"
-        )
+        + ("ambiguous (" + ", ".join(sorted(found)) + ")" if found else "unavailable")
     )
